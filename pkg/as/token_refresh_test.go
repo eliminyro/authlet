@@ -80,9 +80,10 @@ func TestToken_RefreshReuseRevokesFamily(t *testing.T) {
 func TestToken_RefreshClientMismatch(t *testing.T) {
 	a := newTestAS(t)
 	cid := registerTestClient(t, a, "https://claude/cb")
+	other := registerTestClient(t, a, "https://other/cb")
 	plain := seedRefresh(t, a, cid, "https://rs/api")
 	w := httptest.NewRecorder()
-	a.Handler().ServeHTTP(w, refreshRequest(plain, "other-client"))
+	a.Handler().ServeHTTP(w, refreshRequest(plain, other))
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("status %d", w.Code)
 	}

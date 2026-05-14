@@ -25,12 +25,28 @@ type tokenResponse struct {
 	Scope        string `json:"scope,omitempty"`
 }
 
-// handleTokenImpl dispatches on grant_type after parsing the form body.
+// handleTokenImpl dispatches on grant_type after parsing the form body
+// and authenticating the client.
 func (a *AS) handleTokenImpl(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseForm(); err != nil {
 		writeOAuthError(w, http.StatusBadRequest, "invalid_request", "form parse error")
 		return
 	}
+	authedClientID, err := a.authenticateClient(r.Context(), r)
+	if err != nil {
+		switch err {
+		case errClientAuthRequired:
+			w.Header().Set("WWW-Authenticate", `Basic realm="authlet"`)
+			writeOAuthError(w, http.StatusUnauthorized, "invalid_client", "client authentication required")
+		default:
+			writeOAuthError(w, http.StatusUnauthorized, "invalid_client", "client authentication failed")
+		}
+		return
+	}
+	// Overwrite r.Form["client_id"] with the authenticated value so the
+	// grant-type branches see the verified client_id.
+	r.Form.Set("client_id", authedClientID)
+
 	grant := r.Form.Get("grant_type")
 	switch grant {
 	case "authorization_code":
