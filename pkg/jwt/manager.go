@@ -73,7 +73,7 @@ func (m *Manager) RotateIfDue(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("getsigner: %w", err)
 	}
-	if m.now().Sub(signer.CreatedAt) < RotationInterval {
+	if m.nowFn().Sub(signer.CreatedAt) < RotationInterval {
 		return nil
 	}
 	if err := m.insertNew(ctx, true); err != nil {
@@ -84,7 +84,7 @@ func (m *Manager) RotateIfDue(ctx context.Context) error {
 	m.signer = nil
 	m.cache = map[string]*rsa.PublicKey{}
 	m.mu.Unlock()
-	return m.store.Retire(ctx, signer.ID, m.now().Add(OverlapWindow))
+	return m.store.Retire(ctx, signer.ID, m.nowFn().Add(OverlapWindow))
 }
 
 func (m *Manager) insertNew(ctx context.Context, active bool) error {
@@ -111,7 +111,7 @@ func (m *Manager) insertNew(ctx context.Context, active bool) error {
 		PublicPEM:           pubPEM,
 		PrivatePEMEncrypted: enc,
 		IsActive:            active,
-		CreatedAt:           m.now(),
+		CreatedAt:           m.nowFn(),
 	})
 }
 
@@ -203,7 +203,7 @@ func (m *Manager) activeKeys(ctx context.Context) ([]storage.SigningKey, error) 
 	if err != nil {
 		return nil, err
 	}
-	now := m.now()
+	now := m.nowFn()
 	out := ks[:0:0]
 	for _, k := range ks {
 		if k.RetiresAt != nil && !k.RetiresAt.After(now) {
@@ -214,8 +214,21 @@ func (m *Manager) activeKeys(ctx context.Context) ([]storage.SigningKey, error) 
 	return out, nil
 }
 
-// SetNow swaps the Manager's clock. Intended for tests.
-func (m *Manager) SetNow(f func() time.Time) { m.now = f }
+// SetNow swaps the Manager's clock. Intended for tests. Safe for use from
+// any goroutine; locks the manager's internal mutex.
+func (m *Manager) SetNow(f func() time.Time) {
+	m.mu.Lock()
+	m.now = f
+	m.mu.Unlock()
+}
+
+// nowFn returns the current time using the manager's configured clock,
+// holding the manager's RLock so a concurrent SetNow is serialised.
+func (m *Manager) nowFn() time.Time {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.now()
+}
 
 // kidFromPub derives a stable kid from the public key by hashing its PKIX
 // PEM encoding and taking the first 12 bytes as hex.
