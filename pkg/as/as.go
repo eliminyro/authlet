@@ -61,8 +61,8 @@ func (a *AS) handleRegister(w http.ResponseWriter, r *http.Request) {
 	a.handleRegisterImpl(w, r)
 }
 
-func (a *AS) handleIDPCallback(w http.ResponseWriter, _ *http.Request) {
-	http.Error(w, "not implemented", http.StatusNotImplemented)
+func (a *AS) handleIDPCallback(w http.ResponseWriter, r *http.Request) {
+	a.handleIDPCallbackImpl(w, r)
 }
 
 func (a *AS) handleRevoke(w http.ResponseWriter, _ *http.Request) {
