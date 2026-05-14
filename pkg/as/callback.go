@@ -2,7 +2,6 @@ package as
 
 import (
 	"crypto/sha256"
-	"encoding/base64"
 	"encoding/hex"
 	"net/http"
 	"net/url"
@@ -83,7 +82,3 @@ func hashCode(plain string) string {
 	sum := sha256.Sum256([]byte(plain))
 	return hex.EncodeToString(sum[:])
 }
-
-// base64URLNoPad encodes b with base64url and no padding. Reserved for
-// PKCE/state encoding helpers.
-func base64URLNoPad(b []byte) string { return base64.RawURLEncoding.EncodeToString(b) }

@@ -37,4 +37,3 @@ func TestNew_RequiresIssuer(t *testing.T) {
 		t.Fatal("expected error")
 	}
 }
-

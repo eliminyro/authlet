@@ -34,8 +34,8 @@ func (a *AS) handleTokenImpl(w http.ResponseWriter, r *http.Request) {
 	}
 	authedClientID, err := a.authenticateClient(r.Context(), r)
 	if err != nil {
-		switch err {
-		case errClientAuthRequired:
+		switch {
+		case errors.Is(err, errClientAuthRequired):
 			w.Header().Set("WWW-Authenticate", `Basic realm="authlet"`)
 			writeOAuthError(w, http.StatusUnauthorized, "invalid_client", "client authentication required")
 		default:
@@ -123,7 +123,7 @@ func (a *AS) tokenRefresh(w http.ResponseWriter, r *http.Request) {
 		writeOAuthError(w, http.StatusBadRequest, "invalid_target", "resource mismatch")
 		return
 	}
-	a.mintAndWrite(w, r, rt.UserID, rt.ClientID, rt.Resource, rt.Scope, rt.FamilyID)
+	a.mintAndWrite(w, r, rt.UserID, rt.ClientID, resource, rt.Scope, rt.FamilyID)
 	// MarkUsed AFTER successful mint+write (race: best-effort).
 	newHash := hashCode(a.lastIssuedRefresh(r.Context()))
 	_ = a.cfg.Storage.RefreshTokens().MarkUsed(r.Context(), hash, newHash)
@@ -262,5 +262,3 @@ func containsScope(scope, needle string) bool {
 	}
 	return false
 }
-
-var errNotImplemented = errors.New("not implemented")
