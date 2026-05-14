@@ -113,7 +113,7 @@ func (c *Config) validate() error {
 			return fmt.Errorf("as: PathPrefix must start with / and have no trailing slash, got %q", c.PathPrefix)
 		}
 	}
-	if c.Upstream == nil {
+	if !c.Upstream.Configured() {
 		return ErrUpstreamRequired
 	}
 	if c.UserResolver == nil {
