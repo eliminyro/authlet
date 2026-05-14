@@ -175,4 +175,40 @@ func TestManager_SetNowIsRaceFree(t *testing.T) {
 	wg.Wait()
 }
 
+// TestManager_SignerConcurrent exercises Signer from multiple goroutines
+// to confirm the double-checked locking introduced in F11 is race-free.
+func TestManager_SignerConcurrent(t *testing.T) {
+	m, _ := newManager(t)
+	_ = m.Bootstrap(context.Background())
+	const N = 32
+	var wg sync.WaitGroup
+	wg.Add(N)
+	for i := 0; i < N; i++ {
+		go func() {
+			defer wg.Done()
+			_, _, _ = m.Signer(context.Background())
+		}()
+	}
+	wg.Wait()
+}
+
+// TestManager_PublicKeyFuncConcurrent exercises PublicKeyFunc lookups in
+// parallel to confirm cache merges (vs wipes) don't race.
+func TestManager_PublicKeyFuncConcurrent(t *testing.T) {
+	m, store := newManager(t)
+	_ = m.Bootstrap(context.Background())
+	signer, _ := store.SigningKeys().GetSigner(context.Background())
+	resolve := m.PublicKeyFunc(context.Background())
+	const N = 32
+	var wg sync.WaitGroup
+	wg.Add(N)
+	for i := 0; i < N; i++ {
+		go func() {
+			defer wg.Done()
+			_, _ = resolve(signer.ID)
+		}()
+	}
+	wg.Wait()
+}
+
 var _ = storage.ErrNotFound // keep import

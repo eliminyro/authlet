@@ -138,8 +138,13 @@ func (m *Manager) Signer(ctx context.Context) (*rsa.PrivateKey, string, error) {
 		return nil, "", err
 	}
 	m.mu.Lock()
+	defer m.mu.Unlock()
+	// Re-check under the write lock: another goroutine may have populated
+	// the cache for the same kid while we were decrypting.
+	if m.signer != nil && m.signer.kid == k.ID {
+		return m.signer.key, m.signer.kid, nil
+	}
 	m.signer = &signerCache{kid: k.ID, key: priv}
-	m.mu.Unlock()
 	return priv, k.ID, nil
 }
 
@@ -161,7 +166,14 @@ func (m *Manager) PublicKeyFunc(ctx context.Context) PublicKeyFunc {
 		}
 		m.mu.Lock()
 		defer m.mu.Unlock()
-		m.cache = map[string]*rsa.PublicKey{}
+		// Re-check under the write lock — another goroutine may have
+		// already refreshed the cache for this kid.
+		if pk, ok := m.cache[kid]; ok {
+			return pk, nil
+		}
+		// Merge fresh entries into the existing cache rather than
+		// wiping it; concurrent verifiers may still hold pointers we
+		// want to keep serving from cache.
 		for _, k := range ks {
 			pub, perr := ParsePublicPEM(k.PublicPEM)
 			if perr != nil {
