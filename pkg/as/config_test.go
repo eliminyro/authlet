@@ -90,3 +90,35 @@ func TestConfig_LoggerCaptures500SiteErrors(t *testing.T) {
 		t.Fatalf("expected logger to record panic recovery, got: %q", out)
 	}
 }
+
+// TestConfig_LoggerCapturesIDTokenClaimsPanic asserts the IDTokenClaims
+// hook panic is also logged via the configured Logger (S15).
+func TestConfig_LoggerCapturesIDTokenClaimsPanic(t *testing.T) {
+	buf := &bytes.Buffer{}
+	a := newTestASWithLogger(t, buf)
+	a.cfg.IDTokenClaims = func(userID string) (string, bool, string, string) {
+		panic("deliberate id_token panic")
+	}
+	cid := registerTestClient(t, a, "https://m/cb")
+	verifier, challenge := pkcePair(t)
+	// openid scope triggers the IDTokenClaims path.
+	code := seedAuthCodeWithScope(t, a, cid, "https://m/cb", "https://rs/api", challenge, "openid mcp")
+
+	form := "grant_type=authorization_code" +
+		"&code=" + code +
+		"&client_id=" + cid +
+		"&code_verifier=" + verifier +
+		"&redirect_uri=https%3A%2F%2Fm%2Fcb" +
+		"&resource=https%3A%2F%2Frs%2Fapi"
+	req := httptest.NewRequest(http.MethodPost, "/token", strings.NewReader(form))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+	a.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 (panic recovered), got %d body=%s", w.Code, w.Body.String())
+	}
+	out := buf.String()
+	if !strings.Contains(out, "IDTokenClaims hook panicked") {
+		t.Fatalf("expected logger to record IDTokenClaims panic, got: %q", out)
+	}
+}
