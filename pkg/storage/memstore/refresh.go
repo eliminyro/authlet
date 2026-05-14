@@ -77,5 +77,17 @@ func (r *refreshStore) DeleteExpired(ctx context.Context, before time.Time) (int
 			deleted++
 		}
 	}
+	// Garbage-collect revoked-family entries whose last surviving token
+	// has just expired. Without this the revoked map grows unbounded
+	// over the AS's lifetime (one entry per ever-revoked family).
+	aliveFamilies := map[string]struct{}{}
+	for _, rt := range r.m {
+		aliveFamilies[rt.FamilyID] = struct{}{}
+	}
+	for fam := range r.revoked {
+		if _, alive := aliveFamilies[fam]; !alive {
+			delete(r.revoked, fam)
+		}
+	}
 	return deleted, nil
 }
