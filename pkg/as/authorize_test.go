@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"testing"
 	"time"
 
@@ -35,24 +36,49 @@ func TestAuthorize_RejectsNonCodeResponseType(t *testing.T) {
 func TestAuthorize_RequiresPKCES256(t *testing.T) {
 	a := newTestAS(t)
 	cid := registerTestClient(t, a, "https://claude/cb")
-	url := "/authorize?response_type=code&client_id=" + cid + "&redirect_uri=https://claude/cb&resource=https://rs/api"
-	req := httptest.NewRequest(http.MethodGet, url, nil)
+	u := "/authorize?response_type=code&client_id=" + cid + "&redirect_uri=https://claude/cb&resource=https://rs/api&state=xyz"
+	req := httptest.NewRequest(http.MethodGet, u, nil)
 	w := httptest.NewRecorder()
 	a.Handler().ServeHTTP(w, req)
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400 (missing PKCE), got %d", w.Code)
+	if w.Code != http.StatusFound {
+		t.Fatalf("expected 302 (PKCE error redirect), got %d", w.Code)
+	}
+	loc := w.Header().Get("Location")
+	parsed, err := url.Parse(loc)
+	if err != nil {
+		t.Fatalf("bad redirect URL: %v", err)
+	}
+	if parsed.Host != "claude" {
+		t.Fatalf("redirect should go to client, got %q", loc)
+	}
+	if parsed.Query().Get("error") != "invalid_request" {
+		t.Fatalf("missing/wrong error in redirect: %q", loc)
+	}
+	if parsed.Query().Get("state") != "xyz" {
+		t.Fatalf("state not preserved: %q", loc)
 	}
 }
 
 func TestAuthorize_RequiresResource(t *testing.T) {
 	a := newTestAS(t)
 	cid := registerTestClient(t, a, "https://claude/cb")
-	url := "/authorize?response_type=code&client_id=" + cid + "&redirect_uri=https://claude/cb&code_challenge=abc&code_challenge_method=S256"
-	req := httptest.NewRequest(http.MethodGet, url, nil)
+	u := "/authorize?response_type=code&client_id=" + cid + "&redirect_uri=https://claude/cb&code_challenge=abc&code_challenge_method=S256&state=xyz"
+	req := httptest.NewRequest(http.MethodGet, u, nil)
 	w := httptest.NewRecorder()
 	a.Handler().ServeHTTP(w, req)
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400 (missing resource), got %d", w.Code)
+	if w.Code != http.StatusFound {
+		t.Fatalf("expected 302 (resource error redirect), got %d", w.Code)
+	}
+	loc := w.Header().Get("Location")
+	parsed, err := url.Parse(loc)
+	if err != nil {
+		t.Fatalf("bad redirect URL: %v", err)
+	}
+	if parsed.Query().Get("error") != "invalid_target" {
+		t.Fatalf("missing/wrong error in redirect: %q", loc)
+	}
+	if parsed.Query().Get("state") != "xyz" {
+		t.Fatalf("state not preserved: %q", loc)
 	}
 }
 
