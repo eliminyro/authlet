@@ -71,6 +71,32 @@ func TestToken_AuthCodeHappyPath(t *testing.T) {
 	if tr.TokenType != "Bearer" || tr.ExpiresIn <= 0 {
 		t.Fatalf("bad shape: %+v", tr)
 	}
+	if w.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("missing Cache-Control: no-store, got %q", w.Header().Get("Cache-Control"))
+	}
+	if w.Header().Get("Pragma") != "no-cache" {
+		t.Fatalf("missing Pragma: no-cache, got %q", w.Header().Get("Pragma"))
+	}
+}
+
+// TestToken_ErrorResponseHasCacheControl verifies the no-store/no-cache
+// headers are also set on /token error responses (RFC 6749 §5.1).
+func TestToken_ErrorResponseHasCacheControl(t *testing.T) {
+	a := newTestAS(t)
+	cid := registerTestClient(t, a, "https://claude/cb")
+	form := url.Values{}
+	form.Set("grant_type", "unknown")
+	form.Set("client_id", cid)
+	req := httptest.NewRequest(http.MethodPost, "/token", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+	a.Handler().ServeHTTP(w, req)
+	if w.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("missing Cache-Control on error, got %q", w.Header().Get("Cache-Control"))
+	}
+	if w.Header().Get("Pragma") != "no-cache" {
+		t.Fatalf("missing Pragma on error, got %q", w.Header().Get("Pragma"))
+	}
 }
 
 func TestToken_RejectsBadPKCE(t *testing.T) {

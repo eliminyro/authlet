@@ -27,6 +27,11 @@ type tokenResponse struct {
 // handleTokenImpl dispatches on grant_type after parsing the form body
 // and authenticating the client.
 func (a *AS) handleTokenImpl(w http.ResponseWriter, r *http.Request) {
+	// RFC 6749 §5.1: token endpoint responses (success and error) MUST
+	// include Cache-Control: no-store and Pragma: no-cache. Set early so
+	// every code path inherits the headers.
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Pragma", "no-cache")
 	if err := r.ParseForm(); err != nil {
 		writeOAuthError(w, http.StatusBadRequest, "invalid_request", "form parse error")
 		return
