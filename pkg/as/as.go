@@ -1,0 +1,88 @@
+package as
+
+import (
+	"net/http"
+
+	"github.com/go-chi/chi/v5"
+)
+
+// AS is the assembled authorization server.
+type AS struct {
+	cfg *Config
+}
+
+// New validates the config and returns an AS.
+func New(cfg Config) (*AS, error) {
+	if err := cfg.validate(); err != nil {
+		return nil, err
+	}
+	cfg.defaults()
+	return &AS{cfg: &cfg}, nil
+}
+
+// Config returns the live config (read-only).
+func (a *AS) Config() *Config { return a.cfg }
+
+// Handler returns an http.Handler covering all AS endpoints under PathPrefix.
+//
+// Routes (relative to PathPrefix):
+//
+//	GET  /authorize
+//	POST /token
+//	POST /register
+//	GET  /idp/callback
+//	POST /revoke
+//	GET  /userinfo
+//
+// The host-root well-known endpoints (oauth-authorization-server,
+// openid-configuration, jwks.json) are exposed as separate handler methods:
+// MetadataHandler, OIDCMetadataHandler, JWKSHandler.
+func (a *AS) Handler() http.Handler {
+	r := chi.NewRouter()
+	r.Get("/authorize", a.handleAuthorize)
+	r.Post("/token", a.handleToken)
+	r.Post("/register", a.handleRegister)
+	r.Get("/idp/callback", a.handleIDPCallback)
+	r.Post("/revoke", a.handleRevoke)
+	r.Get("/userinfo", a.handleUserinfo)
+	return r
+}
+
+func (a *AS) handleAuthorize(w http.ResponseWriter, _ *http.Request) {
+	http.Error(w, "not implemented", http.StatusNotImplemented)
+}
+
+func (a *AS) handleToken(w http.ResponseWriter, _ *http.Request) {
+	http.Error(w, "not implemented", http.StatusNotImplemented)
+}
+
+func (a *AS) handleRegister(w http.ResponseWriter, _ *http.Request) {
+	http.Error(w, "not implemented", http.StatusNotImplemented)
+}
+
+func (a *AS) handleIDPCallback(w http.ResponseWriter, _ *http.Request) {
+	http.Error(w, "not implemented", http.StatusNotImplemented)
+}
+
+func (a *AS) handleRevoke(w http.ResponseWriter, _ *http.Request) {
+	http.Error(w, "not implemented", http.StatusNotImplemented)
+}
+
+func (a *AS) handleUserinfo(w http.ResponseWriter, _ *http.Request) {
+	http.Error(w, "not implemented", http.StatusNotImplemented)
+}
+
+// MetadataHandler serves /.well-known/oauth-authorization-server.
+func (a *AS) MetadataHandler(w http.ResponseWriter, _ *http.Request) {
+	http.Error(w, "not implemented", http.StatusNotImplemented)
+}
+
+// OIDCMetadataHandler serves /.well-known/openid-configuration.
+func (a *AS) OIDCMetadataHandler(w http.ResponseWriter, _ *http.Request) {
+	http.Error(w, "not implemented", http.StatusNotImplemented)
+}
+
+// JWKSHandler serves /.well-known/jwks.json.
+func (a *AS) JWKSHandler(w http.ResponseWriter, _ *http.Request) {
+	http.Error(w, "not implemented", http.StatusNotImplemented)
+}
