@@ -14,12 +14,14 @@ import (
 	"github.com/google/uuid"
 )
 
-// tokenResponse is the RFC 6749 §5.1 successful token endpoint response.
+// tokenResponse is the RFC 6749 §5.1 successful token endpoint response,
+// extended with the optional OIDC id_token field.
 type tokenResponse struct {
 	AccessToken  string `json:"access_token"`
 	TokenType    string `json:"token_type"`
 	ExpiresIn    int    `json:"expires_in"`
 	RefreshToken string `json:"refresh_token,omitempty"`
+	IDToken      string `json:"id_token,omitempty"`
 	Scope        string `json:"scope,omitempty"`
 }
 
@@ -167,11 +169,44 @@ func (a *AS) mintAndWrite(w http.ResponseWriter, r *http.Request, userID, client
 	}
 	a.stashIssuedRefresh(r, refreshPlain)
 	_ = a.cfg.Storage.Clients().Touch(r.Context(), clientID)
+
+	var idTokenStr string
+	if containsScope(scope, "openid") {
+		idClaims := jwt.Claims{
+			Issuer:    a.cfg.Issuer,
+			Subject:   userID,
+			Audience:  clientID, // OIDC: id_token aud = client_id, not resource
+			IssuedAt:  now.Unix(),
+			ExpiresAt: exp.Unix(),
+			JTI:       uuid.NewString(),
+			Extra:     map[string]any{},
+		}
+		if a.cfg.IDTokenClaims != nil {
+			email, verified, name, pic := a.cfg.IDTokenClaims(userID)
+			if email != "" {
+				idClaims.Extra["email"] = email
+				idClaims.Extra["email_verified"] = verified
+			}
+			if name != "" {
+				idClaims.Extra["name"] = name
+			}
+			if pic != "" {
+				idClaims.Extra["picture"] = pic
+			}
+		}
+		idTokenStr, err = jwt.Sign(idClaims, kid, priv)
+		if err != nil {
+			writeOAuthError(w, http.StatusInternalServerError, "server_error", "id_token sign failed")
+			return
+		}
+	}
+
 	writeJSON(w, http.StatusOK, tokenResponse{
 		AccessToken:  at,
 		TokenType:    "Bearer",
 		ExpiresIn:    int(a.cfg.AccessTokenTTL.Seconds()),
 		RefreshToken: refreshPlain,
+		IDToken:      idTokenStr,
 		Scope:        scope,
 	})
 }
@@ -199,6 +234,17 @@ func verifyPKCE(challenge, verifier string) bool {
 	enc = strings.ReplaceAll(enc, "+", "-")
 	enc = strings.ReplaceAll(enc, "/", "_")
 	return enc == challenge
+}
+
+// containsScope reports whether the whitespace-separated scope list
+// contains the given needle.
+func containsScope(scope, needle string) bool {
+	for _, s := range strings.Fields(scope) {
+		if s == needle {
+			return true
+		}
+	}
+	return false
 }
 
 var errNotImplemented = errors.New("not implemented")
