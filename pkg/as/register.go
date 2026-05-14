@@ -57,6 +57,15 @@ func (a *AS) handleRegisterImpl(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// RFC 7591 §2: validate grant_types — we only support
+	// authorization_code and refresh_token. Unknown values are rejected
+	// rather than silently dropped, so misconfigured clients fail fast.
+	for _, g := range req.GrantTypes {
+		if g != "authorization_code" && g != "refresh_token" {
+			writeOAuthError(w, http.StatusBadRequest, "invalid_client_metadata", "unsupported grant_type: "+g)
+			return
+		}
+	}
 	clientID, err := randomID(16)
 	if err != nil {
 		writeOAuthError(w, http.StatusInternalServerError, "server_error", "id generation failed")

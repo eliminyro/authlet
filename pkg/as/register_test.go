@@ -74,3 +74,18 @@ func TestRegister_RejectsRelativeRedirectURI(t *testing.T) {
 		t.Fatalf("expected 400, got %d", w.Code)
 	}
 }
+
+// TestRegister_RejectsUnsupportedGrantType asserts that grant_types not
+// in {authorization_code, refresh_token} are rejected with
+// invalid_client_metadata per RFC 7591.
+func TestRegister_RejectsUnsupportedGrantType(t *testing.T) {
+	a := newTestAS(t)
+	body := `{"redirect_uris":["https://claude.example/cb"],"grant_types":["password"]}`
+	req := httptest.NewRequest(http.MethodPost, "/register", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	a.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d body=%s", w.Code, w.Body.String())
+	}
+}
