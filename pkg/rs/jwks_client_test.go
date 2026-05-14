@@ -73,8 +73,8 @@ func TestJWKSClient_SkipsNonRS256Alg(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"keys": []map[string]any{{
 				"kty": "RSA", "alg": "PS256", "kid": "ps",
-				"n": base64.RawURLEncoding.EncodeToString(priv.PublicKey.N.Bytes()),
-				"e": base64.RawURLEncoding.EncodeToString(big.NewInt(int64(priv.PublicKey.E)).Bytes()),
+				"n": base64.RawURLEncoding.EncodeToString(priv.N.Bytes()),
+				"e": base64.RawURLEncoding.EncodeToString(big.NewInt(int64(priv.E)).Bytes()),
 			}},
 		})
 	})
