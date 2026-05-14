@@ -90,7 +90,7 @@ func main() {
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
-	go server.RunCleanup(ctx, time.Minute)
+	cleanupDone := server.RunCleanup(ctx, time.Minute)
 
 	srv := &http.Server{Addr: *addr, Handler: mux, ReadHeaderTimeout: 10 * time.Second}
 	go func() {
@@ -104,6 +104,13 @@ func main() {
 	shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancelShutdown()
 	_ = srv.Shutdown(shutdownCtx)
+	// Wait briefly for the cleanup goroutine to exit so we don't lose
+	// in-flight sweep results to a hard process exit.
+	select {
+	case <-cleanupDone:
+	case <-time.After(2 * time.Second):
+		log.Println("authletd: cleanup goroutine slow to exit")
+	}
 }
 
 func loadMasterKey(b64 string) ([]byte, error) {
