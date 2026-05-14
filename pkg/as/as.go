@@ -72,17 +72,23 @@ func (a *AS) handleUserinfo(w http.ResponseWriter, _ *http.Request) {
 	http.Error(w, "not implemented", http.StatusNotImplemented)
 }
 
-// MetadataHandler serves /.well-known/oauth-authorization-server.
+// MetadataHandler serves /.well-known/oauth-authorization-server (RFC 8414).
 func (a *AS) MetadataHandler(w http.ResponseWriter, _ *http.Request) {
-	http.Error(w, "not implemented", http.StatusNotImplemented)
+	writeJSON(w, http.StatusOK, a.metadata())
 }
 
 // OIDCMetadataHandler serves /.well-known/openid-configuration.
 func (a *AS) OIDCMetadataHandler(w http.ResponseWriter, _ *http.Request) {
-	http.Error(w, "not implemented", http.StatusNotImplemented)
+	writeJSON(w, http.StatusOK, a.metadata())
 }
 
-// JWKSHandler serves /.well-known/jwks.json.
-func (a *AS) JWKSHandler(w http.ResponseWriter, _ *http.Request) {
-	http.Error(w, "not implemented", http.StatusNotImplemented)
+// JWKSHandler serves /.well-known/jwks.json — currently active public keys.
+func (a *AS) JWKSHandler(w http.ResponseWriter, r *http.Request) {
+	jwks, err := a.cfg.KeyManager.PublishJWKS(r.Context())
+	if err != nil {
+		http.Error(w, "jwks unavailable", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Cache-Control", "public, max-age=3600")
+	writeJSON(w, http.StatusOK, jwks)
 }
