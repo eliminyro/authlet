@@ -2,6 +2,7 @@ package as
 
 import (
 	"errors"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -74,6 +75,16 @@ func (a *AS) handleAuthorizeImpl(w http.ResponseWriter, r *http.Request) {
 		redirectError(w, r, redirect, clientState, "invalid_target", "resource indicator required")
 		return
 	}
+	// RFC 8707 §2: resource indicators MUST be absolute URIs and
+	// SHOULD use HTTPS. We allow http:// only for localhost to keep
+	// local development frictionless.
+	if ru, err := url.Parse(resource); err != nil || !ru.IsAbs() || ru.Scheme == "" {
+		redirectError(w, r, redirect, clientState, "invalid_target", "resource must be an absolute URI")
+		return
+	} else if ru.Scheme != "https" && !isLocalhost(ru.Host) {
+		redirectError(w, r, redirect, clientState, "invalid_target", "resource must use https (or http for localhost dev)")
+		return
+	}
 
 	stateKey, err := newStateKey()
 	if err != nil {
@@ -116,6 +127,17 @@ func redirectError(w http.ResponseWriter, r *http.Request, redirectURI, state, e
 	}
 	u.RawQuery = qs.Encode()
 	http.Redirect(w, r, u.String(), http.StatusFound)
+}
+
+// isLocalhost reports whether host (which may include :port) refers to
+// the loopback. Used to grant the http://... resource exception for
+// local development while still requiring https for public hosts.
+func isLocalhost(host string) bool {
+	h, _, err := net.SplitHostPort(host)
+	if err != nil {
+		h = host
+	}
+	return h == "localhost" || strings.HasPrefix(h, "127.") || h == "::1"
 }
 
 // redirectAllowed reports whether the candidate redirect_uri matches one of
