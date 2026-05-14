@@ -71,6 +71,28 @@ func TestToken_ConfidentialClientCorrectSecretReachesGrantHandler(t *testing.T) 
 	}
 }
 
+// TestToken_ConfidentialClientURLEncodedSecret asserts that Basic Auth
+// credentials are URL-decoded per RFC 6749 §2.3.1 before bcrypt-compare.
+func TestToken_ConfidentialClientURLEncodedSecret(t *testing.T) {
+	a := newTestAS(t)
+	// Secret contains characters that should be percent-encoded in transit.
+	realSecret := "s p:c!"
+	registerConfidentialClient(t, a, "mem-mcp", "https://m/cb", realSecret)
+	form := url.Values{}
+	form.Set("grant_type", "unknown")
+	req := httptest.NewRequest(http.MethodPost, "/token", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	// Send Basic Auth using the percent-encoded form, as per spec.
+	req.SetBasicAuth("mem-mcp", url.QueryEscape(realSecret))
+	w := httptest.NewRecorder()
+	a.Handler().ServeHTTP(w, req)
+	// 400 means auth passed (then grant-handler rejected). 401 means we
+	// failed the bcrypt comparison.
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 after auth success, got %d body=%s", w.Code, w.Body.String())
+	}
+}
+
 func TestToken_PublicClientNoBasicAuthAllowed(t *testing.T) {
 	a := newTestAS(t)
 	cid := registerTestClient(t, a, "https://claude/cb")
