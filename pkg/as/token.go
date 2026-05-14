@@ -96,6 +96,7 @@ func (a *AS) tokenAuthCode(w http.ResponseWriter, r *http.Request) {
 	}
 	refreshPlain, err := randomID(32)
 	if err != nil {
+		a.cfg.Logger.Error("token: refresh gen failed", "err", err, "client_id", clientID)
 		writeOAuthError(w, http.StatusInternalServerError, "server_error", "refresh gen failed")
 		return
 	}
@@ -137,6 +138,7 @@ func (a *AS) tokenRefresh(w http.ResponseWriter, r *http.Request) {
 	}
 	// Reuse detection: if this token already has a replacement, family revoke.
 	if rt.ReplacedBy != "" {
+		a.cfg.Logger.Warn("token: refresh reuse detected", "client_id", clientID, "family_id", rt.FamilyID)
 		_ = a.cfg.Storage.RefreshTokens().RevokeFamily(r.Context(), rt.FamilyID)
 		writeOAuthError(w, http.StatusBadRequest, "invalid_grant", "refresh reused")
 		return
@@ -156,6 +158,7 @@ func (a *AS) tokenRefresh(w http.ResponseWriter, r *http.Request) {
 	// concurrent goroutines both passed the ReplacedBy guard.
 	refreshPlain, err := randomID(32)
 	if err != nil {
+		a.cfg.Logger.Error("token: refresh gen failed", "err", err, "client_id", clientID)
 		writeOAuthError(w, http.StatusInternalServerError, "server_error", "refresh gen failed")
 		return
 	}
@@ -164,7 +167,10 @@ func (a *AS) tokenRefresh(w http.ResponseWriter, r *http.Request) {
 		// Another goroutine won the rotation race. Revoke the family
 		// per reuse detection semantics.
 		if errors.Is(err, storage.ErrAlreadyConsumed) {
+			a.cfg.Logger.Warn("token: refresh rotation race lost", "client_id", clientID, "family_id", rt.FamilyID)
 			_ = a.cfg.Storage.RefreshTokens().RevokeFamily(r.Context(), rt.FamilyID)
+		} else {
+			a.cfg.Logger.Error("token: MarkUsed failed", "err", err, "client_id", clientID, "family_id", rt.FamilyID)
 		}
 		writeOAuthError(w, http.StatusBadRequest, "invalid_grant", "refresh reused")
 		return
@@ -178,13 +184,14 @@ func (a *AS) tokenRefresh(w http.ResponseWriter, r *http.Request) {
 func (a *AS) mintAndWrite(w http.ResponseWriter, r *http.Request, userID, clientID, resource, scope, familyID, refreshPlain string) {
 	priv, kid, err := a.cfg.KeyManager.Signer(r.Context())
 	if err != nil {
+		a.cfg.Logger.Error("token: signer unavailable", "err", err, "client_id", clientID)
 		writeOAuthError(w, http.StatusInternalServerError, "server_error", "signer unavailable")
 		return
 	}
 	now := time.Now()
 	exp := now.Add(a.cfg.AccessTokenTTL)
 	extra := map[string]any{}
-	for k, v := range safeAdditionalClaims(a.cfg.AdditionalClaims, userID, clientID, resource) {
+	for k, v := range a.safeAdditionalClaims(userID, clientID, resource) {
 		extra[k] = v
 	}
 	claims := jwt.Claims{
@@ -200,6 +207,7 @@ func (a *AS) mintAndWrite(w http.ResponseWriter, r *http.Request, userID, client
 	}
 	at, err := jwt.Sign(claims, kid, priv)
 	if err != nil {
+		a.cfg.Logger.Error("token: sign failed", "err", err, "client_id", clientID)
 		writeOAuthError(w, http.StatusInternalServerError, "server_error", "sign failed")
 		return
 	}
@@ -216,6 +224,7 @@ func (a *AS) mintAndWrite(w http.ResponseWriter, r *http.Request, userID, client
 		ExpiresAt: now.Add(a.cfg.RefreshTokenTTL),
 	}
 	if err := a.cfg.Storage.RefreshTokens().Save(r.Context(), rt); err != nil {
+		a.cfg.Logger.Error("token: refresh save failed", "err", err, "client_id", clientID, "family_id", familyID)
 		writeOAuthError(w, http.StatusInternalServerError, "server_error", "refresh save failed")
 		return
 	}
@@ -232,7 +241,7 @@ func (a *AS) mintAndWrite(w http.ResponseWriter, r *http.Request, userID, client
 			JTI:       uuid.NewString(),
 			Extra:     map[string]any{},
 		}
-		email, verified, name, pic := safeIDTokenClaims(a.cfg.IDTokenClaims, userID)
+		email, verified, name, pic := a.safeIDTokenClaims(userID)
 		if email != "" {
 			idClaims.Extra["email"] = email
 			idClaims.Extra["email_verified"] = verified
@@ -245,6 +254,7 @@ func (a *AS) mintAndWrite(w http.ResponseWriter, r *http.Request, userID, client
 		}
 		idTokenStr, err = jwt.Sign(idClaims, kid, priv)
 		if err != nil {
+			a.cfg.Logger.Error("token: id_token sign failed", "err", err, "client_id", clientID)
 			writeOAuthError(w, http.StatusInternalServerError, "server_error", "id_token sign failed")
 			return
 		}
@@ -262,32 +272,36 @@ func (a *AS) mintAndWrite(w http.ResponseWriter, r *http.Request, userID, client
 
 // safeAdditionalClaims invokes the configured AdditionalClaims hook and
 // recovers from panics so a misbehaving claim provider cannot crash the
-// token endpoint. Returns nil on panic or when fn is nil.
-func safeAdditionalClaims(fn func(userID, clientID, resource string) map[string]any, userID, clientID, resource string) (m map[string]any) {
+// token endpoint. Returns nil on panic or when the hook is nil. Logs at
+// ERROR level on recovery so the broken hook is visible to operators.
+func (a *AS) safeAdditionalClaims(userID, clientID, resource string) (m map[string]any) {
 	defer func() {
 		if rec := recover(); rec != nil {
+			a.cfg.Logger.Error("token: AdditionalClaims hook panicked", "recover", rec, "client_id", clientID)
 			m = nil
 		}
 	}()
-	if fn == nil {
+	if a.cfg.AdditionalClaims == nil {
 		return nil
 	}
-	return fn(userID, clientID, resource)
+	return a.cfg.AdditionalClaims(userID, clientID, resource)
 }
 
 // safeIDTokenClaims invokes the configured IDTokenClaims hook and recovers
 // from panics so a misbehaving claim provider cannot crash /token. Returns
-// zero values on panic or when fn is nil.
-func safeIDTokenClaims(fn func(userID string) (string, bool, string, string), userID string) (email string, emailVerified bool, name, picture string) {
+// zero values on panic or when the hook is nil. Logs at ERROR level on
+// recovery.
+func (a *AS) safeIDTokenClaims(userID string) (email string, emailVerified bool, name, picture string) {
 	defer func() {
 		if rec := recover(); rec != nil {
+			a.cfg.Logger.Error("token: IDTokenClaims hook panicked", "recover", rec, "user_id", userID)
 			email, emailVerified, name, picture = "", false, "", ""
 		}
 	}()
-	if fn == nil {
+	if a.cfg.IDTokenClaims == nil {
 		return "", false, "", ""
 	}
-	return fn(userID)
+	return a.cfg.IDTokenClaims(userID)
 }
 
 // verifyPKCE returns true if sha256(verifier) base64url-no-pad equals the

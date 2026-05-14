@@ -8,6 +8,7 @@ package as
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -63,6 +64,12 @@ type Config struct {
 	// the standard OIDC ID token claims for the given user. If nil, the ID
 	// token is minted with only sub + iss + aud + iat + exp.
 	IDTokenClaims func(userID string) (email string, emailVerified bool, name, picture string)
+
+	// Logger receives diagnostic logs for every 500-class error path
+	// (signer-unavailable, sign-failed, storage failures, etc.) and
+	// security events (refresh-token reuse, claim-hook panics). When nil,
+	// defaults() sets it to slog.Default().
+	Logger *slog.Logger
 }
 
 // ErrIssuerRequired indicates Config.Issuer was not set.
@@ -98,6 +105,9 @@ func (c *Config) defaults() {
 	}
 	if c.PathPrefix == "" {
 		c.PathPrefix = "/oauth"
+	}
+	if c.Logger == nil {
+		c.Logger = slog.Default()
 	}
 }
 

@@ -68,6 +68,7 @@ func (a *AS) handleRegisterImpl(w http.ResponseWriter, r *http.Request) {
 	}
 	clientID, err := randomID(16)
 	if err != nil {
+		a.cfg.Logger.Error("register: id generation failed", "err", err)
 		writeOAuthError(w, http.StatusInternalServerError, "server_error", "id generation failed")
 		return
 	}
@@ -89,6 +90,7 @@ func (a *AS) handleRegisterImpl(w http.ResponseWriter, r *http.Request) {
 		ExpiresAt:  now.Add(a.cfg.ClientTTL),
 	}
 	if err := a.cfg.Storage.Clients().Create(r.Context(), cl); err != nil {
+		a.cfg.Logger.Error("register: storage create failed", "err", err)
 		writeOAuthError(w, http.StatusInternalServerError, "server_error", "storage failed")
 		return
 	}

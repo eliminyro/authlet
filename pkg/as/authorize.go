@@ -65,6 +65,7 @@ func (a *AS) handleAuthorizeImpl(w http.ResponseWriter, r *http.Request) {
 
 	stateKey, err := newStateKey()
 	if err != nil {
+		a.cfg.Logger.Error("authorize: state key gen failed", "err", err, "client_id", clientID)
 		redirectError(w, r, redirect, clientState, "server_error", "state gen failed")
 		return
 	}
