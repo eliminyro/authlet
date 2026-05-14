@@ -9,15 +9,19 @@ import (
 // Store is the umbrella in-memory storage. It composes one struct per
 // sub-store and exposes each via the storage.Storage interface.
 type Store struct {
-	clients *clientStore
-	codes   *codeStore
+	clients  *clientStore
+	codes    *codeStore
+	refresh  *refreshStore
+	signKeys *signingKeyStore
 }
 
 // New constructs an empty in-memory Store with all sub-stores initialised.
 func New() *Store {
 	return &Store{
-		clients: &clientStore{m: map[string]storage.Client{}},
-		codes:   &codeStore{m: map[string]storage.AuthCode{}},
+		clients:  &clientStore{m: map[string]storage.Client{}},
+		codes:    &codeStore{m: map[string]storage.AuthCode{}},
+		refresh:  &refreshStore{m: map[string]storage.RefreshToken{}, revoked: map[string]struct{}{}},
+		signKeys: &signingKeyStore{},
 	}
 }
 
@@ -26,3 +30,11 @@ func (s *Store) Clients() storage.ClientStore { return s.clients }
 
 // Codes returns the in-memory CodeStore.
 func (s *Store) Codes() storage.CodeStore { return s.codes }
+
+// RefreshTokens returns the in-memory RefreshTokenStore.
+func (s *Store) RefreshTokens() storage.RefreshTokenStore { return s.refresh }
+
+// SigningKeys returns the in-memory SigningKeyStore.
+func (s *Store) SigningKeys() storage.SigningKeyStore { return s.signKeys }
+
+var _ storage.Storage = (*Store)(nil)
