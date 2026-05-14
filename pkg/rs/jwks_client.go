@@ -112,6 +112,12 @@ func (c *JWKSClient) refreshLocked(ctx context.Context) error {
 		if k.Kty != "RSA" {
 			continue
 		}
+		// Per RFC 7517 §4.4, alg is optional. When present it MUST be
+		// RS256 for our purposes; reject anything else to avoid
+		// algorithm confusion.
+		if k.Alg != "" && k.Alg != "RS256" {
+			continue
+		}
 		nBytes, err := base64.RawURLEncoding.DecodeString(k.N)
 		if err != nil {
 			continue

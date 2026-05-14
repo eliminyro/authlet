@@ -62,3 +62,26 @@ func TestJWKSClient_UnknownKID(t *testing.T) {
 		t.Fatal("expected error")
 	}
 }
+
+// TestJWKSClient_SkipsNonRS256Alg verifies the client ignores JWKS entries
+// whose alg is set but not RS256 (defense against algorithm confusion).
+func TestJWKSClient_SkipsNonRS256Alg(t *testing.T) {
+	priv, _ := jwt.GenerateRSA()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/jwks", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"keys": []map[string]any{{
+				"kty": "RSA", "alg": "PS256", "kid": "ps",
+				"n": base64.RawURLEncoding.EncodeToString(priv.PublicKey.N.Bytes()),
+				"e": base64.RawURLEncoding.EncodeToString(big.NewInt(int64(priv.PublicKey.E)).Bytes()),
+			}},
+		})
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	c := NewJWKSClient(srv.URL+"/jwks", time.Minute)
+	if _, err := c.Key(context.Background(), "ps"); err == nil {
+		t.Fatal("expected ErrNoKey: PS256 must be skipped")
+	}
+}
