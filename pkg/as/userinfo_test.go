@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -17,6 +18,30 @@ func TestUserinfo_NoBearerReturns401(t *testing.T) {
 	a.Handler().ServeHTTP(w, req)
 	if w.Code != http.StatusUnauthorized {
 		t.Fatalf("status %d", w.Code)
+	}
+	if got := w.Header().Get("WWW-Authenticate"); got == "" {
+		t.Fatal("expected WWW-Authenticate header on 401")
+	}
+}
+
+// TestUserinfo_BadTokenReturns401WithInvalidTokenHeader asserts that an
+// unverifiable bearer token produces a 401 with WWW-Authenticate carrying
+// error="invalid_token" per RFC 6750 §3.
+func TestUserinfo_BadTokenReturns401WithInvalidTokenHeader(t *testing.T) {
+	a := newTestAS(t)
+	req := httptest.NewRequest(http.MethodGet, "/userinfo", nil)
+	req.Header.Set("Authorization", "Bearer not-a-valid-jwt")
+	w := httptest.NewRecorder()
+	a.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("status %d", w.Code)
+	}
+	got := w.Header().Get("WWW-Authenticate")
+	if got == "" {
+		t.Fatal("expected WWW-Authenticate header on 401")
+	}
+	if !strings.Contains(got, `error="invalid_token"`) {
+		t.Fatalf(`WWW-Authenticate missing error="invalid_token": %q`, got)
 	}
 }
 

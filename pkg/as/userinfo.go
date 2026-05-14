@@ -22,6 +22,9 @@ func (a *AS) handleUserinfoImpl(w http.ResponseWriter, r *http.Request) {
 		ExpectedIssuer: a.cfg.Issuer,
 	})
 	if err != nil {
+		// RFC 6750 §3: invalid token must carry WWW-Authenticate with
+		// error="invalid_token".
+		w.Header().Set("WWW-Authenticate", `Bearer realm="authlet", error="invalid_token"`)
 		w.WriteHeader(http.StatusUnauthorized)
 		return
 	}
