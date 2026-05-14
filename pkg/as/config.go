@@ -7,6 +7,8 @@ package as
 
 import (
 	"errors"
+	"fmt"
+	"strings"
 	"time"
 
 	"github.com/eliminyro/authlet/pkg/idp"
@@ -102,6 +104,14 @@ func (c *Config) defaults() {
 func (c *Config) validate() error {
 	if c.Issuer == "" {
 		return ErrIssuerRequired
+	}
+	if strings.HasSuffix(c.Issuer, "/") {
+		return fmt.Errorf("as: Issuer must not have a trailing slash, got %q", c.Issuer)
+	}
+	if c.PathPrefix != "" {
+		if !strings.HasPrefix(c.PathPrefix, "/") || strings.HasSuffix(c.PathPrefix, "/") {
+			return fmt.Errorf("as: PathPrefix must start with / and have no trailing slash, got %q", c.PathPrefix)
+		}
 	}
 	if c.Upstream == nil {
 		return ErrUpstreamRequired

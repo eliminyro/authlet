@@ -37,3 +37,24 @@ func TestNew_RequiresIssuer(t *testing.T) {
 		t.Fatal("expected error")
 	}
 }
+
+func TestNew_RejectsTrailingSlashIssuer(t *testing.T) {
+	_, err := New(Config{Issuer: "https://example.test/"})
+	if err == nil {
+		t.Fatal("expected error for trailing-slash Issuer")
+	}
+}
+
+func TestNew_RejectsTrailingSlashPathPrefix(t *testing.T) {
+	_, err := New(Config{Issuer: "https://example.test", PathPrefix: "/oauth/"})
+	if err == nil {
+		t.Fatal("expected error for trailing-slash PathPrefix")
+	}
+}
+
+func TestNew_RejectsPathPrefixWithoutLeadingSlash(t *testing.T) {
+	_, err := New(Config{Issuer: "https://example.test", PathPrefix: "oauth"})
+	if err == nil {
+		t.Fatal("expected error for PathPrefix without leading slash")
+	}
+}
