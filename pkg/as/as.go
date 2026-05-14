@@ -53,8 +53,8 @@ func (a *AS) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 	a.handleAuthorizeImpl(w, r)
 }
 
-func (a *AS) handleToken(w http.ResponseWriter, _ *http.Request) {
-	http.Error(w, "not implemented", http.StatusNotImplemented)
+func (a *AS) handleToken(w http.ResponseWriter, r *http.Request) {
+	a.handleTokenImpl(w, r)
 }
 
 func (a *AS) handleRegister(w http.ResponseWriter, r *http.Request) {
