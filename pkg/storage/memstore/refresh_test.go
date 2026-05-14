@@ -82,3 +82,14 @@ func TestRefresh_DeleteExpired(t *testing.T) {
 		t.Fatalf("expected 1 deleted, got %d", n)
 	}
 }
+
+// TestRefresh_MarkUsedNotFound documents the contract: MarkUsed on an
+// unknown hash returns ErrNotFound, distinct from ErrAlreadyConsumed
+// (which signals reuse).
+func TestRefresh_MarkUsedNotFound(t *testing.T) {
+	s := New()
+	err := s.RefreshTokens().MarkUsed(context.Background(), "never-saved", "anything")
+	if !errors.Is(err, storage.ErrNotFound) {
+		t.Fatalf("expected ErrNotFound, got %v", err)
+	}
+}
