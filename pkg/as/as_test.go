@@ -3,8 +3,6 @@ package as
 import (
 	"context"
 	"crypto/rand"
-	"net/http"
-	"net/http/httptest"
 	"testing"
 
 	"github.com/eliminyro/authlet/pkg/idp"
@@ -37,18 +35,5 @@ func TestNew_RequiresIssuer(t *testing.T) {
 	_, err := New(Config{})
 	if err == nil {
 		t.Fatal("expected error")
-	}
-}
-
-func TestHandler_StubsReturn501(t *testing.T) {
-	a := newTestAS(t)
-	h := a.Handler()
-	for _, path := range []string{"/authorize", "/idp/callback", "/userinfo"} {
-		req := httptest.NewRequest(http.MethodGet, path, nil)
-		w := httptest.NewRecorder()
-		h.ServeHTTP(w, req)
-		if w.Code != http.StatusNotImplemented {
-			t.Fatalf("%s: got %d want 501", path, w.Code)
-		}
 	}
 }

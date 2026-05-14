@@ -55,6 +55,12 @@ type Config struct {
 	// app-specific claims to merge into the JWT (e.g. tenant_id for Memory).
 	// May be nil.
 	AdditionalClaims func(userID, clientID, resource string) map[string]any
+
+	// IDTokenClaims is called when the AS needs to mint an ID token (i.e.
+	// when the original auth request scope contained "openid"). It returns
+	// the standard OIDC ID token claims for the given user. If nil, the ID
+	// token is minted with only sub + iss + aud + iat + exp.
+	IDTokenClaims func(userID string) (email string, emailVerified bool, name, picture string)
 }
 
 // ErrIssuerRequired indicates Config.Issuer was not set.

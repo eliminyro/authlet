@@ -8,7 +8,8 @@ import (
 
 // AS is the assembled authorization server.
 type AS struct {
-	cfg *Config
+	cfg    *Config
+	states *stateStore
 }
 
 // New validates the config and returns an AS.
@@ -17,7 +18,7 @@ func New(cfg Config) (*AS, error) {
 		return nil, err
 	}
 	cfg.defaults()
-	return &AS{cfg: &cfg}, nil
+	return &AS{cfg: &cfg, states: newStateStore()}, nil
 }
 
 // Config returns the live config (read-only).
@@ -48,28 +49,28 @@ func (a *AS) Handler() http.Handler {
 	return r
 }
 
-func (a *AS) handleAuthorize(w http.ResponseWriter, _ *http.Request) {
-	http.Error(w, "not implemented", http.StatusNotImplemented)
+func (a *AS) handleAuthorize(w http.ResponseWriter, r *http.Request) {
+	a.handleAuthorizeImpl(w, r)
 }
 
-func (a *AS) handleToken(w http.ResponseWriter, _ *http.Request) {
-	http.Error(w, "not implemented", http.StatusNotImplemented)
+func (a *AS) handleToken(w http.ResponseWriter, r *http.Request) {
+	a.handleTokenImpl(w, r)
 }
 
 func (a *AS) handleRegister(w http.ResponseWriter, r *http.Request) {
 	a.handleRegisterImpl(w, r)
 }
 
-func (a *AS) handleIDPCallback(w http.ResponseWriter, _ *http.Request) {
-	http.Error(w, "not implemented", http.StatusNotImplemented)
+func (a *AS) handleIDPCallback(w http.ResponseWriter, r *http.Request) {
+	a.handleIDPCallbackImpl(w, r)
 }
 
-func (a *AS) handleRevoke(w http.ResponseWriter, _ *http.Request) {
-	http.Error(w, "not implemented", http.StatusNotImplemented)
+func (a *AS) handleRevoke(w http.ResponseWriter, r *http.Request) {
+	a.handleRevokeImpl(w, r)
 }
 
-func (a *AS) handleUserinfo(w http.ResponseWriter, _ *http.Request) {
-	http.Error(w, "not implemented", http.StatusNotImplemented)
+func (a *AS) handleUserinfo(w http.ResponseWriter, r *http.Request) {
+	a.handleUserinfoImpl(w, r)
 }
 
 // MetadataHandler serves /.well-known/oauth-authorization-server (RFC 8414).
