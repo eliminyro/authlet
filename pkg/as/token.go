@@ -177,10 +177,8 @@ func (a *AS) mintAndWrite(w http.ResponseWriter, r *http.Request, userID, client
 	now := time.Now()
 	exp := now.Add(a.cfg.AccessTokenTTL)
 	extra := map[string]any{}
-	if a.cfg.AdditionalClaims != nil {
-		for k, v := range a.cfg.AdditionalClaims(userID, clientID, resource) {
-			extra[k] = v
-		}
+	for k, v := range safeAdditionalClaims(a.cfg.AdditionalClaims, userID, clientID, resource) {
+		extra[k] = v
 	}
 	claims := jwt.Claims{
 		Issuer:    a.cfg.Issuer,
@@ -227,18 +225,16 @@ func (a *AS) mintAndWrite(w http.ResponseWriter, r *http.Request, userID, client
 			JTI:       uuid.NewString(),
 			Extra:     map[string]any{},
 		}
-		if a.cfg.IDTokenClaims != nil {
-			email, verified, name, pic := a.cfg.IDTokenClaims(userID)
-			if email != "" {
-				idClaims.Extra["email"] = email
-				idClaims.Extra["email_verified"] = verified
-			}
-			if name != "" {
-				idClaims.Extra["name"] = name
-			}
-			if pic != "" {
-				idClaims.Extra["picture"] = pic
-			}
+		email, verified, name, pic := safeIDTokenClaims(a.cfg.IDTokenClaims, userID)
+		if email != "" {
+			idClaims.Extra["email"] = email
+			idClaims.Extra["email_verified"] = verified
+		}
+		if name != "" {
+			idClaims.Extra["name"] = name
+		}
+		if pic != "" {
+			idClaims.Extra["picture"] = pic
 		}
 		idTokenStr, err = jwt.Sign(idClaims, kid, priv)
 		if err != nil {
@@ -255,6 +251,36 @@ func (a *AS) mintAndWrite(w http.ResponseWriter, r *http.Request, userID, client
 		IDToken:      idTokenStr,
 		Scope:        scope,
 	})
+}
+
+// safeAdditionalClaims invokes the configured AdditionalClaims hook and
+// recovers from panics so a misbehaving claim provider cannot crash the
+// token endpoint. Returns nil on panic or when fn is nil.
+func safeAdditionalClaims(fn func(userID, clientID, resource string) map[string]any, userID, clientID, resource string) (m map[string]any) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			m = nil
+		}
+	}()
+	if fn == nil {
+		return nil
+	}
+	return fn(userID, clientID, resource)
+}
+
+// safeIDTokenClaims invokes the configured IDTokenClaims hook and recovers
+// from panics so a misbehaving claim provider cannot crash /token. Returns
+// zero values on panic or when fn is nil.
+func safeIDTokenClaims(fn func(userID string) (string, bool, string, string), userID string) (email string, emailVerified bool, name, picture string) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			email, emailVerified, name, picture = "", false, "", ""
+		}
+	}()
+	if fn == nil {
+		return "", false, "", ""
+	}
+	return fn(userID)
 }
 
 // verifyPKCE returns true if sha256(verifier) base64url-no-pad equals the

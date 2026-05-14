@@ -79,6 +79,34 @@ func TestToken_AuthCodeHappyPath(t *testing.T) {
 	}
 }
 
+// TestToken_AdditionalClaimsPanicRecovered asserts a panicking
+// AdditionalClaims hook is recovered and the token is still issued.
+func TestToken_AdditionalClaimsPanicRecovered(t *testing.T) {
+	a := newTestAS(t)
+	a.cfg.AdditionalClaims = func(userID, clientID, resource string) map[string]any {
+		panic("boom")
+	}
+	cid := registerTestClient(t, a, "https://claude/cb")
+	verifier, challenge := pkcePair(t)
+	code := seedAuthCode(t, a, cid, "https://claude/cb", "https://rs/api", challenge)
+
+	form := url.Values{}
+	form.Set("grant_type", "authorization_code")
+	form.Set("code", code)
+	form.Set("client_id", cid)
+	form.Set("code_verifier", verifier)
+	form.Set("redirect_uri", "https://claude/cb")
+	form.Set("resource", "https://rs/api")
+
+	req := httptest.NewRequest(http.MethodPost, "/token", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+	a.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 (panic recovered), got %d body=%s", w.Code, w.Body.String())
+	}
+}
+
 // TestToken_ErrorResponseHasCacheControl verifies the no-store/no-cache
 // headers are also set on /token error responses (RFC 6749 §5.1).
 func TestToken_ErrorResponseHasCacheControl(t *testing.T) {
