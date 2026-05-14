@@ -43,12 +43,18 @@ type signerCache struct {
 	key *rsa.PrivateKey
 }
 
-// NewManager wires a Manager around a SigningKeyStore and the 32-byte master
-// key used to encrypt private key material at rest.
+// NewManager wires a Manager around a SigningKeyStore and the 32-byte
+// master key used to encrypt private key material at rest.
+//
+// The masterKey slice is copied; the caller may zero its copy after
+// construction without affecting the Manager. This prevents accidental
+// secret corruption if the caller reuses the buffer for a different
+// purpose.
 func NewManager(store storage.SigningKeyStore, masterKey []byte) *Manager {
+	mk := append([]byte(nil), masterKey...)
 	return &Manager{
 		store:     store,
-		masterKey: masterKey,
+		masterKey: mk,
 		cache:     map[string]*rsa.PublicKey{},
 		now:       time.Now,
 	}

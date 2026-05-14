@@ -19,6 +19,32 @@ func newManager(t *testing.T) (*Manager, *memstore.Store) {
 	return NewManager(store.SigningKeys(), mk), store
 }
 
+// TestManager_CopiesMasterKey asserts that NewManager defensively
+// copies the master-key slice so a caller that zeroes its local copy
+// after construction doesn't break encryption / decryption inside the
+// Manager.
+func TestManager_CopiesMasterKey(t *testing.T) {
+	mk := make([]byte, 32)
+	_, _ = rand.Read(mk)
+	store := memstore.New()
+	m := NewManager(store.SigningKeys(), mk)
+	// Zero the caller's slice. If NewManager kept a reference (no copy),
+	// Bootstrap would Encrypt with all-zeroes and Signer would decrypt
+	// with the actual random material — guaranteeing a mismatch.
+	for i := range mk {
+		mk[i] = 0
+	}
+	if err := m.Bootstrap(context.Background()); err != nil {
+		t.Fatalf("bootstrap: %v", err)
+	}
+	// Signer triggers a Decrypt; if the copy wasn't done, this would
+	// fail because the post-zero buffer differs from what was used to
+	// encrypt during Bootstrap.
+	if _, _, err := m.Signer(context.Background()); err != nil {
+		t.Fatalf("signer: %v (master-key copy missing?)", err)
+	}
+}
+
 func TestManager_BootstrapInsertsActiveKey(t *testing.T) {
 	m, store := newManager(t)
 	if err := m.Bootstrap(context.Background()); err != nil {
