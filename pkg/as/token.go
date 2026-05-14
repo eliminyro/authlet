@@ -1,7 +1,6 @@
 package as
 
 import (
-	"context"
 	"crypto/sha256"
 	"encoding/base64"
 	"errors"
@@ -83,12 +82,29 @@ func (a *AS) tokenAuthCode(w http.ResponseWriter, r *http.Request) {
 		writeOAuthError(w, http.StatusBadRequest, "invalid_grant", "pkce verification failed")
 		return
 	}
-	a.mintAndWrite(w, r, authCode.UserID, authCode.ClientID, authCode.Resource, authCode.Scope, "")
+	refreshPlain, err := randomID(32)
+	if err != nil {
+		writeOAuthError(w, http.StatusInternalServerError, "server_error", "refresh gen failed")
+		return
+	}
+	a.mintAndWrite(w, r, authCode.UserID, authCode.ClientID, authCode.Resource, authCode.Scope, "", refreshPlain)
 }
 
 // tokenRefresh handles the refresh_token grant with rotation + reuse
 // detection: if the presented token has already been used, the entire
 // family is revoked.
+//
+// Rotation order is critical to avoid a TOCTOU race where two concurrent
+// goroutines both pass the "not yet used" guard and both successfully
+// rotate the same token:
+//
+//  1. Get the stored token.
+//  2. Pre-generate the new refresh plaintext + hash.
+//  3. MarkUsed(oldHash, newHash) — atomic check-and-set in storage.
+//     If another goroutine already won the race, MarkUsed returns
+//     ErrAlreadyConsumed and we revoke the family.
+//  4. Save the new token.
+//  5. mintAndWrite the response.
 func (a *AS) tokenRefresh(w http.ResponseWriter, r *http.Request) {
 	refresh := r.Form.Get("refresh_token")
 	clientID := r.Form.Get("client_id")
@@ -123,16 +139,31 @@ func (a *AS) tokenRefresh(w http.ResponseWriter, r *http.Request) {
 		writeOAuthError(w, http.StatusBadRequest, "invalid_target", "resource mismatch")
 		return
 	}
-	a.mintAndWrite(w, r, rt.UserID, rt.ClientID, resource, rt.Scope, rt.FamilyID)
-	// MarkUsed AFTER successful mint+write (race: best-effort).
-	newHash := hashCode(a.lastIssuedRefresh(r.Context()))
-	_ = a.cfg.Storage.RefreshTokens().MarkUsed(r.Context(), hash, newHash)
+	// Pre-generate the successor's plaintext so we can MarkUsed atomically
+	// before issuing tokens. This closes a TOCTOU race in which two
+	// concurrent goroutines both passed the ReplacedBy guard.
+	refreshPlain, err := randomID(32)
+	if err != nil {
+		writeOAuthError(w, http.StatusInternalServerError, "server_error", "refresh gen failed")
+		return
+	}
+	newHash := hashCode(refreshPlain)
+	if err := a.cfg.Storage.RefreshTokens().MarkUsed(r.Context(), hash, newHash); err != nil {
+		// Another goroutine won the rotation race. Revoke the family
+		// per reuse detection semantics.
+		if errors.Is(err, storage.ErrAlreadyConsumed) {
+			_ = a.cfg.Storage.RefreshTokens().RevokeFamily(r.Context(), rt.FamilyID)
+		}
+		writeOAuthError(w, http.StatusBadRequest, "invalid_grant", "refresh reused")
+		return
+	}
+	a.mintAndWrite(w, r, rt.UserID, rt.ClientID, resource, rt.Scope, rt.FamilyID, refreshPlain)
 }
 
-// mintAndWrite issues a fresh access+refresh pair, writes the HTTP response,
-// and stashes the new refresh plaintext on the request so the caller can
-// MarkUsed the old token.
-func (a *AS) mintAndWrite(w http.ResponseWriter, r *http.Request, userID, clientID, resource, scope, familyID string) {
+// mintAndWrite issues a fresh access+refresh pair using the caller-provided
+// refreshPlain (which was generated up-front so MarkUsed could be atomic),
+// then writes the HTTP response.
+func (a *AS) mintAndWrite(w http.ResponseWriter, r *http.Request, userID, clientID, resource, scope, familyID, refreshPlain string) {
 	priv, kid, err := a.cfg.KeyManager.Signer(r.Context())
 	if err != nil {
 		writeOAuthError(w, http.StatusInternalServerError, "server_error", "signer unavailable")
@@ -162,11 +193,6 @@ func (a *AS) mintAndWrite(w http.ResponseWriter, r *http.Request, userID, client
 		writeOAuthError(w, http.StatusInternalServerError, "server_error", "sign failed")
 		return
 	}
-	refreshPlain, err := randomID(32)
-	if err != nil {
-		writeOAuthError(w, http.StatusInternalServerError, "server_error", "refresh gen failed")
-		return
-	}
 	if familyID == "" {
 		familyID = uuid.NewString()
 	}
@@ -183,7 +209,6 @@ func (a *AS) mintAndWrite(w http.ResponseWriter, r *http.Request, userID, client
 		writeOAuthError(w, http.StatusInternalServerError, "server_error", "refresh save failed")
 		return
 	}
-	a.stashIssuedRefresh(r, refreshPlain)
 	_ = a.cfg.Storage.Clients().Touch(r.Context(), clientID)
 
 	var idTokenStr string
@@ -225,21 +250,6 @@ func (a *AS) mintAndWrite(w http.ResponseWriter, r *http.Request, userID, client
 		IDToken:      idTokenStr,
 		Scope:        scope,
 	})
-}
-
-// Per-request stash of the last issued refresh plaintext so the refresh path
-// can MarkUsed without re-deriving it.
-type ctxKey int
-
-const ctxKeyIssuedRefresh ctxKey = 1
-
-func (a *AS) stashIssuedRefresh(r *http.Request, plain string) {
-	*r = *r.WithContext(context.WithValue(r.Context(), ctxKeyIssuedRefresh, plain))
-}
-
-func (a *AS) lastIssuedRefresh(ctx context.Context) string {
-	v, _ := ctx.Value(ctxKeyIssuedRefresh).(string)
-	return v
 }
 
 // verifyPKCE returns true if sha256(verifier) base64url-no-pad equals the
