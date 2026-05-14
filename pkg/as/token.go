@@ -1,6 +1,7 @@
 package as
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/base64"
 	"errors"
@@ -100,24 +101,40 @@ func (a *AS) tokenAuthCode(w http.ResponseWriter, r *http.Request) {
 		writeOAuthError(w, http.StatusInternalServerError, "server_error", "refresh gen failed")
 		return
 	}
-	a.mintAndWrite(w, r, authCode.UserID, authCode.ClientID, authCode.Resource, authCode.Scope, "", refreshPlain)
+	// New code grant: save the refresh token before signing so any
+	// storage failure aborts cleanly without leaking a partially-issued
+	// session.
+	if err := a.saveRefreshToken(r.Context(), refreshPlain, "", authCode.ClientID, authCode.UserID, authCode.Resource, authCode.Scope); err != nil {
+		a.cfg.Logger.Error("token: refresh save failed", "err", err, "client_id", clientID)
+		writeOAuthError(w, http.StatusInternalServerError, "server_error", "refresh save failed")
+		return
+	}
+	a.mintAndWrite(w, r, authCode.UserID, authCode.ClientID, authCode.Resource, authCode.Scope, refreshPlain)
 }
 
 // tokenRefresh handles the refresh_token grant with rotation + reuse
 // detection: if the presented token has already been used, the entire
 // family is revoked.
 //
-// Rotation order is critical to avoid a TOCTOU race where two concurrent
-// goroutines both pass the "not yet used" guard and both successfully
-// rotate the same token:
+// Rotation order is critical to avoid two failure modes:
+//  1. TOCTOU race: two concurrent goroutines both pass the ReplacedBy
+//     guard and both rotate the same token. Closed by the atomic
+//     check-and-set in MarkUsed.
+//  2. Session bricking: a transient storage failure after MarkUsed
+//     leaves the old token marked used but the new token never persisted,
+//     so the user is locked out forever. Closed by saving the new token
+//     BEFORE MarkUsed and treating any failure as a recoverable 500.
 //
-//  1. Get the stored token.
-//  2. Pre-generate the new refresh plaintext + hash.
-//  3. MarkUsed(oldHash, newHash) — atomic check-and-set in storage.
-//     If another goroutine already won the race, MarkUsed returns
-//     ErrAlreadyConsumed and we revoke the family.
-//  4. Save the new token.
-//  5. mintAndWrite the response.
+// Resulting order:
+//  1. Get the stored token (rejects family-revoked etc).
+//  2. Reuse check: rt.ReplacedBy != "" -> revoke family + 400.
+//  3. Generate new plaintext + hash.
+//  4. Save the new refresh token (inheriting FamilyID). On failure
+//     return 500 — the old token is still valid and the user can retry.
+//  5. MarkUsed(oldHash, newHash) — atomic check-and-set. On
+//     ErrAlreadyConsumed we lost the race; revoke the family. The new
+//     token row is now orphaned but family revocation invalidates it.
+//  6. Mint access (+ optional id) token, write the response.
 func (a *AS) tokenRefresh(w http.ResponseWriter, r *http.Request) {
 	refresh := r.Form.Get("refresh_token")
 	clientID := r.Form.Get("client_id")
@@ -153,9 +170,6 @@ func (a *AS) tokenRefresh(w http.ResponseWriter, r *http.Request) {
 		writeOAuthError(w, http.StatusBadRequest, "invalid_target", "resource mismatch")
 		return
 	}
-	// Pre-generate the successor's plaintext so we can MarkUsed atomically
-	// before issuing tokens. This closes a TOCTOU race in which two
-	// concurrent goroutines both passed the ReplacedBy guard.
 	refreshPlain, err := randomID(32)
 	if err != nil {
 		a.cfg.Logger.Error("token: refresh gen failed", "err", err, "client_id", clientID)
@@ -163,11 +177,20 @@ func (a *AS) tokenRefresh(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	newHash := hashCode(refreshPlain)
+	// Save the new token BEFORE MarkUsed. If this fails, the old token
+	// is still valid so the user can retry rather than being permanently
+	// locked out (regression guard against the F1-era ordering).
+	if err := a.saveRefreshToken(r.Context(), refreshPlain, rt.FamilyID, rt.ClientID, rt.UserID, resource, rt.Scope); err != nil {
+		a.cfg.Logger.Error("token: refresh save failed", "err", err, "client_id", clientID, "family_id", rt.FamilyID)
+		writeOAuthError(w, http.StatusInternalServerError, "server_error", "refresh save failed")
+		return
+	}
+	// Atomic check-and-set on the old token. If we lose the race, revoke
+	// the family — the new token we just saved is orphaned but family
+	// revocation prevents anyone from using it.
 	if err := a.cfg.Storage.RefreshTokens().MarkUsed(r.Context(), hash, newHash); err != nil {
-		// Another goroutine won the rotation race. Revoke the family
-		// per reuse detection semantics.
 		if errors.Is(err, storage.ErrAlreadyConsumed) {
-			a.cfg.Logger.Warn("token: refresh rotation race lost", "client_id", clientID, "family_id", rt.FamilyID)
+			a.cfg.Logger.Warn("token: refresh rotation race lost; orphaned new token will be inert via family revoke", "client_id", clientID, "family_id", rt.FamilyID)
 			_ = a.cfg.Storage.RefreshTokens().RevokeFamily(r.Context(), rt.FamilyID)
 		} else {
 			a.cfg.Logger.Error("token: MarkUsed failed", "err", err, "client_id", clientID, "family_id", rt.FamilyID)
@@ -175,18 +198,59 @@ func (a *AS) tokenRefresh(w http.ResponseWriter, r *http.Request) {
 		writeOAuthError(w, http.StatusBadRequest, "invalid_grant", "refresh reused")
 		return
 	}
-	a.mintAndWrite(w, r, rt.UserID, rt.ClientID, resource, rt.Scope, rt.FamilyID, refreshPlain)
+	a.mintAndWrite(w, r, rt.UserID, rt.ClientID, resource, rt.Scope, refreshPlain)
 }
 
-// mintAndWrite issues a fresh access+refresh pair using the caller-provided
-// refreshPlain (which was generated up-front so MarkUsed could be atomic),
-// then writes the HTTP response.
-func (a *AS) mintAndWrite(w http.ResponseWriter, r *http.Request, userID, clientID, resource, scope, familyID, refreshPlain string) {
-	priv, kid, err := a.cfg.KeyManager.Signer(r.Context())
+// saveRefreshToken persists a freshly generated refresh-token plaintext
+// under the given FamilyID. When familyID is empty a fresh family is
+// minted (i.e. a new authorization-code grant).
+func (a *AS) saveRefreshToken(ctx context.Context, plain, familyID, clientID, userID, resource, scope string) error {
+	if familyID == "" {
+		familyID = uuid.NewString()
+	}
+	now := time.Now()
+	return a.cfg.Storage.RefreshTokens().Save(ctx, storage.RefreshToken{
+		TokenHash: hashCode(plain),
+		FamilyID:  familyID,
+		ClientID:  clientID,
+		UserID:    userID,
+		Resource:  resource,
+		Scope:     scope,
+		ExpiresAt: now.Add(a.cfg.RefreshTokenTTL),
+	})
+}
+
+// mintAndWrite signs a fresh access (+ optional id) token and writes the
+// HTTP response. The refresh token has already been persisted by the
+// caller — this function only signs JWTs and writes the body, never
+// saves refresh tokens. Splitting save-then-mint is what guarantees the
+// S1 invariant (no marked-used-but-not-saved window).
+func (a *AS) mintAndWrite(w http.ResponseWriter, r *http.Request, userID, clientID, resource, scope, refreshPlain string) {
+	at, idTokenStr, err := a.mintTokens(r.Context(), userID, clientID, resource, scope)
+	if err != nil {
+		writeOAuthError(w, http.StatusInternalServerError, "server_error", err.Error())
+		return
+	}
+	_ = a.cfg.Storage.Clients().Touch(r.Context(), clientID)
+	writeJSON(w, http.StatusOK, tokenResponse{
+		AccessToken:  at,
+		TokenType:    "Bearer",
+		ExpiresIn:    int(a.cfg.AccessTokenTTL.Seconds()),
+		RefreshToken: refreshPlain,
+		IDToken:      idTokenStr,
+		Scope:        scope,
+	})
+}
+
+// mintTokens signs the access token and, when "openid" is in scope, the
+// id_token. It does NOT touch the refresh-token store. Returns short
+// error sentinels that the caller maps to OAuth 500 bodies; all log
+// emission for these failures happens here.
+func (a *AS) mintTokens(ctx context.Context, userID, clientID, resource, scope string) (accessToken, idTokenStr string, err error) {
+	priv, kid, err := a.cfg.KeyManager.Signer(ctx)
 	if err != nil {
 		a.cfg.Logger.Error("token: signer unavailable", "err", err, "client_id", clientID)
-		writeOAuthError(w, http.StatusInternalServerError, "server_error", "signer unavailable")
-		return
+		return "", "", errSignerUnavailable
 	}
 	now := time.Now()
 	exp := now.Add(a.cfg.AccessTokenTTL)
@@ -208,67 +272,44 @@ func (a *AS) mintAndWrite(w http.ResponseWriter, r *http.Request, userID, client
 	at, err := jwt.Sign(claims, kid, priv)
 	if err != nil {
 		a.cfg.Logger.Error("token: sign failed", "err", err, "client_id", clientID)
-		writeOAuthError(w, http.StatusInternalServerError, "server_error", "sign failed")
-		return
+		return "", "", errSignFailed
 	}
-	if familyID == "" {
-		familyID = uuid.NewString()
+	if !containsScope(scope, "openid") {
+		return at, "", nil
 	}
-	rt := storage.RefreshToken{
-		TokenHash: hashCode(refreshPlain),
-		FamilyID:  familyID,
-		ClientID:  clientID,
-		UserID:    userID,
-		Resource:  resource,
-		Scope:     scope,
-		ExpiresAt: now.Add(a.cfg.RefreshTokenTTL),
+	idClaims := jwt.Claims{
+		Issuer:    a.cfg.Issuer,
+		Subject:   userID,
+		Audience:  clientID, // OIDC: id_token aud = client_id, not resource
+		IssuedAt:  now.Unix(),
+		ExpiresAt: exp.Unix(),
+		JTI:       uuid.NewString(),
+		Extra:     map[string]any{},
 	}
-	if err := a.cfg.Storage.RefreshTokens().Save(r.Context(), rt); err != nil {
-		a.cfg.Logger.Error("token: refresh save failed", "err", err, "client_id", clientID, "family_id", familyID)
-		writeOAuthError(w, http.StatusInternalServerError, "server_error", "refresh save failed")
-		return
+	email, verified, name, pic := a.safeIDTokenClaims(userID)
+	if email != "" {
+		idClaims.Extra["email"] = email
+		idClaims.Extra["email_verified"] = verified
 	}
-	_ = a.cfg.Storage.Clients().Touch(r.Context(), clientID)
-
-	var idTokenStr string
-	if containsScope(scope, "openid") {
-		idClaims := jwt.Claims{
-			Issuer:    a.cfg.Issuer,
-			Subject:   userID,
-			Audience:  clientID, // OIDC: id_token aud = client_id, not resource
-			IssuedAt:  now.Unix(),
-			ExpiresAt: exp.Unix(),
-			JTI:       uuid.NewString(),
-			Extra:     map[string]any{},
-		}
-		email, verified, name, pic := a.safeIDTokenClaims(userID)
-		if email != "" {
-			idClaims.Extra["email"] = email
-			idClaims.Extra["email_verified"] = verified
-		}
-		if name != "" {
-			idClaims.Extra["name"] = name
-		}
-		if pic != "" {
-			idClaims.Extra["picture"] = pic
-		}
-		idTokenStr, err = jwt.Sign(idClaims, kid, priv)
-		if err != nil {
-			a.cfg.Logger.Error("token: id_token sign failed", "err", err, "client_id", clientID)
-			writeOAuthError(w, http.StatusInternalServerError, "server_error", "id_token sign failed")
-			return
-		}
+	if name != "" {
+		idClaims.Extra["name"] = name
 	}
-
-	writeJSON(w, http.StatusOK, tokenResponse{
-		AccessToken:  at,
-		TokenType:    "Bearer",
-		ExpiresIn:    int(a.cfg.AccessTokenTTL.Seconds()),
-		RefreshToken: refreshPlain,
-		IDToken:      idTokenStr,
-		Scope:        scope,
-	})
+	if pic != "" {
+		idClaims.Extra["picture"] = pic
+	}
+	idStr, err := jwt.Sign(idClaims, kid, priv)
+	if err != nil {
+		a.cfg.Logger.Error("token: id_token sign failed", "err", err, "client_id", clientID)
+		return "", "", errIDTokenSignFailed
+	}
+	return at, idStr, nil
 }
+
+var (
+	errSignerUnavailable = errors.New("signer unavailable")
+	errSignFailed        = errors.New("sign failed")
+	errIDTokenSignFailed = errors.New("id_token sign failed")
+)
 
 // safeAdditionalClaims invokes the configured AdditionalClaims hook and
 // recovers from panics so a misbehaving claim provider cannot crash the
