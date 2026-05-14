@@ -7,6 +7,7 @@ steps:
     image: ghcr.io/eliminyro/go-ci:latest
     commands:
       - go test -race -coverprofile=coverage.txt -covermode=atomic ./...
+      - go test -race -tags=integration ./...
 
   - name: fmt
     image: ghcr.io/eliminyro/go-ci:latest
