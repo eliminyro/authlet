@@ -65,6 +65,14 @@ func (a *AS) handleRegisterImpl(w http.ResponseWriter, r *http.Request) {
 			writeOAuthError(w, http.StatusBadRequest, "invalid_redirect_uri", errInvalidRedirect.Error())
 			return
 		}
+		// RFC 6749 §3.1.2.1 / OAuth 2.1: confidential client redirects
+		// MUST use https; we extend the same rule to DCR'd public
+		// clients except when the host is loopback (allowed for dev
+		// convenience).
+		if parsed.Scheme != "https" && !isLocalhost(parsed.Host) {
+			writeOAuthError(w, http.StatusBadRequest, "invalid_redirect_uri", "redirect_uri must use https (or http for localhost dev)")
+			return
+		}
 	}
 	// RFC 7591 §2: validate grant_types — we only support
 	// authorization_code and refresh_token. Unknown values are rejected
