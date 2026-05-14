@@ -369,8 +369,12 @@ func verifyPKCE(challenge, verifier string) bool {
 		return false
 	}
 	for _, c := range verifier {
-		if !(c >= 'A' && c <= 'Z') && !(c >= 'a' && c <= 'z') &&
-			!(c >= '0' && c <= '9') && c != '-' && c != '.' && c != '_' && c != '~' {
+		switch {
+		case c >= 'A' && c <= 'Z':
+		case c >= 'a' && c <= 'z':
+		case c >= '0' && c <= '9':
+		case c == '-' || c == '.' || c == '_' || c == '~':
+		default:
 			return false
 		}
 	}

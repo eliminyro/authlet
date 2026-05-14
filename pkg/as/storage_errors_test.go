@@ -32,10 +32,12 @@ type stubStorageWithClient struct {
 	clients storage.ClientStore
 }
 
-func (s *stubStorageWithClient) Clients() storage.ClientStore             { return s.clients }
-func (s *stubStorageWithClient) Codes() storage.CodeStore                 { return s.inner.Codes() }
-func (s *stubStorageWithClient) RefreshTokens() storage.RefreshTokenStore { return s.inner.RefreshTokens() }
-func (s *stubStorageWithClient) SigningKeys() storage.SigningKeyStore     { return s.inner.SigningKeys() }
+func (s *stubStorageWithClient) Clients() storage.ClientStore { return s.clients }
+func (s *stubStorageWithClient) Codes() storage.CodeStore     { return s.inner.Codes() }
+func (s *stubStorageWithClient) RefreshTokens() storage.RefreshTokenStore {
+	return s.inner.RefreshTokens()
+}
+func (s *stubStorageWithClient) SigningKeys() storage.SigningKeyStore { return s.inner.SigningKeys() }
 
 // TestAuthorize_StorageErrorIsServerError asserts that when the client
 // store returns a non-ErrNotFound error during /authorize, the response
