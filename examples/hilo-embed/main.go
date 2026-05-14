@@ -86,7 +86,9 @@ func main() {
 		_, _ = w.Write([]byte("mcp protected"))
 	}))
 
-	go server.RunCleanup(ctx, time.Hour)
+	// RunCleanup starts its own goroutine and returns a done channel;
+	// this example discards the channel.
+	_ = server.RunCleanup(ctx, time.Hour)
 
 	_ = http.ListenAndServe(":8080", r) //nolint:gosec // example only; no timeouts configured
 }

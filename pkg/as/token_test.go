@@ -212,6 +212,69 @@ func TestToken_RejectsNonS256PKCEMethod(t *testing.T) {
 	}
 }
 
+// TestToken_RejectsInvalidPKCEVerifierLength asserts that a verifier
+// shorter than 43 chars (RFC 7636 §4.1 min) is rejected even if it
+// would otherwise hash to the stored challenge.
+func TestToken_RejectsInvalidPKCEVerifierLength(t *testing.T) {
+	a := newTestAS(t)
+	cid := registerTestClient(t, a, "https://claude/cb")
+	shortVerifier := "tooShort" // 8 chars
+	// Compute the challenge that matches this short verifier so the
+	// length check is the ONLY thing that rejects.
+	sum := sha256.Sum256([]byte(shortVerifier))
+	challenge := strings.TrimRight(base64.URLEncoding.EncodeToString(sum[:]), "=")
+	challenge = strings.ReplaceAll(challenge, "+", "-")
+	challenge = strings.ReplaceAll(challenge, "/", "_")
+	code := seedAuthCode(t, a, cid, "https://claude/cb", "https://rs/api", challenge)
+
+	form := url.Values{}
+	form.Set("grant_type", "authorization_code")
+	form.Set("code", code)
+	form.Set("client_id", cid)
+	form.Set("code_verifier", shortVerifier)
+	form.Set("redirect_uri", "https://claude/cb")
+	form.Set("resource", "https://rs/api")
+	req := httptest.NewRequest(http.MethodPost, "/token", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+	a.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for short verifier, got %d body=%s", w.Code, w.Body.String())
+	}
+}
+
+// TestToken_RejectsInvalidPKCEVerifierCharset asserts that a verifier
+// containing characters outside [A-Za-z0-9\-._~] is rejected, even
+// when its length is in [43,128].
+func TestToken_RejectsInvalidPKCEVerifierCharset(t *testing.T) {
+	a := newTestAS(t)
+	cid := registerTestClient(t, a, "https://claude/cb")
+	// 50 chars including a forbidden '+'. SHA-256 hashes anything so
+	// we can still produce a matching challenge — the charset check
+	// must do the rejecting.
+	bad := strings.Repeat("a", 49) + "+"
+	sum := sha256.Sum256([]byte(bad))
+	challenge := strings.TrimRight(base64.URLEncoding.EncodeToString(sum[:]), "=")
+	challenge = strings.ReplaceAll(challenge, "+", "-")
+	challenge = strings.ReplaceAll(challenge, "/", "_")
+	code := seedAuthCode(t, a, cid, "https://claude/cb", "https://rs/api", challenge)
+
+	form := url.Values{}
+	form.Set("grant_type", "authorization_code")
+	form.Set("code", code)
+	form.Set("client_id", cid)
+	form.Set("code_verifier", bad)
+	form.Set("redirect_uri", "https://claude/cb")
+	form.Set("resource", "https://rs/api")
+	req := httptest.NewRequest(http.MethodPost, "/token", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+	a.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for verifier with bad charset, got %d body=%s", w.Code, w.Body.String())
+	}
+}
+
 func TestToken_CodeIsSingleUse(t *testing.T) {
 	a := newTestAS(t)
 	cid := registerTestClient(t, a, "https://claude/cb")

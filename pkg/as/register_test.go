@@ -89,3 +89,56 @@ func TestRegister_RejectsUnsupportedGrantType(t *testing.T) {
 		t.Fatalf("expected 400, got %d body=%s", w.Code, w.Body.String())
 	}
 }
+
+// TestRegister_RejectsHTTPRedirectURIForNonLocalhost asserts that DCR
+// rejects redirect_uris with http:// scheme for non-loopback hosts
+// (per RFC 6749 §3.1.2.1 and OAuth 2.1). Localhost is allowed via the
+// isLocalhost exception.
+func TestRegister_RejectsHTTPRedirectURIForNonLocalhost(t *testing.T) {
+	a := newTestAS(t)
+	body := `{"redirect_uris":["http://evil.example/cb"]}`
+	req := httptest.NewRequest(http.MethodPost, "/register", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	a.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d body=%s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "invalid_redirect_uri") {
+		t.Fatalf("expected invalid_redirect_uri, got %s", w.Body.String())
+	}
+}
+
+// TestRegister_AcceptsHTTPLocalhostRedirect asserts that DCR accepts
+// http://localhost or http://127.0.0.1 redirect URIs for development.
+func TestRegister_AcceptsHTTPLocalhostRedirect(t *testing.T) {
+	a := newTestAS(t)
+	for _, u := range []string{"http://localhost:3000/cb", "http://127.0.0.1:8080/cb"} {
+		body := `{"redirect_uris":["` + u + `"]}`
+		req := httptest.NewRequest(http.MethodPost, "/register", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		a.Handler().ServeHTTP(w, req)
+		if w.Code != http.StatusCreated {
+			t.Fatalf("expected 201 for %q, got %d body=%s", u, w.Code, w.Body.String())
+		}
+	}
+}
+
+// TestRegister_RejectsOversizedBody asserts that a request body larger
+// than maxBodyBytes (1 MiB) is rejected with HTTP 413, not silently
+// truncated or accepted.
+func TestRegister_RejectsOversizedBody(t *testing.T) {
+	a := newTestAS(t)
+	// Build a 2 MiB body. JSON shape doesn't matter — MaxBytesReader
+	// will trip Decode before any field is parsed.
+	huge := strings.Repeat("a", 2<<20)
+	body := `{"redirect_uris":["https://x/cb"],"client_name":"` + huge + `"}`
+	req := httptest.NewRequest(http.MethodPost, "/register", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	a.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("expected 413 for oversized body, got %d body=%s", w.Code, w.Body.String())
+	}
+}

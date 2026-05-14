@@ -35,8 +35,17 @@ type dcrResponse struct {
 var errInvalidRedirect = errors.New("invalid redirect_uris")
 
 func (a *AS) handleRegisterImpl(w http.ResponseWriter, r *http.Request) {
+	// Cap request body to 1 MiB. A typical DCR request is well under 1
+	// KB; this guards against memory-exhaustion attacks from oversized
+	// JSON. MaxBytesReader makes Decode return a *MaxBytesError once the
+	// limit is exceeded.
+	r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
 	var req dcrRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		if isBodyTooLarge(err) {
+			writeOAuthError(w, http.StatusRequestEntityTooLarge, "invalid_request", "request body too large")
+			return
+		}
 		writeOAuthError(w, http.StatusBadRequest, "invalid_request", "malformed JSON")
 		return
 	}
@@ -56,6 +65,14 @@ func (a *AS) handleRegisterImpl(w http.ResponseWriter, r *http.Request) {
 			writeOAuthError(w, http.StatusBadRequest, "invalid_redirect_uri", errInvalidRedirect.Error())
 			return
 		}
+		// RFC 6749 §3.1.2.1 / OAuth 2.1: confidential client redirects
+		// MUST use https; we extend the same rule to DCR'd public
+		// clients except when the host is loopback (allowed for dev
+		// convenience).
+		if parsed.Scheme != "https" && !isLocalhost(parsed.Host) {
+			writeOAuthError(w, http.StatusBadRequest, "invalid_redirect_uri", "redirect_uri must use https (or http for localhost dev)")
+			return
+		}
 	}
 	// RFC 7591 §2: validate grant_types — we only support
 	// authorization_code and refresh_token. Unknown values are rejected
@@ -68,6 +85,7 @@ func (a *AS) handleRegisterImpl(w http.ResponseWriter, r *http.Request) {
 	}
 	clientID, err := randomID(16)
 	if err != nil {
+		a.cfg.Logger.Error("register: id generation failed", "err", err)
 		writeOAuthError(w, http.StatusInternalServerError, "server_error", "id generation failed")
 		return
 	}
@@ -89,6 +107,7 @@ func (a *AS) handleRegisterImpl(w http.ResponseWriter, r *http.Request) {
 		ExpiresAt:  now.Add(a.cfg.ClientTTL),
 	}
 	if err := a.cfg.Storage.Clients().Create(r.Context(), cl); err != nil {
+		a.cfg.Logger.Error("register: storage create failed", "err", err)
 		writeOAuthError(w, http.StatusInternalServerError, "server_error", "storage failed")
 		return
 	}

@@ -21,6 +21,27 @@ go run ./cmd/authletd \
   --prm-resource http://localhost:8090/mcp
 ```
 
+### Persistent master key
+
+By default authletd generates a fresh 32-byte AES-GCM master key at
+startup and logs a warning. Every restart rotates the key, which
+invalidates every previously-issued refresh token and forces every
+client to re-authenticate. For repeated Inspector runs across
+restarts, pin the key:
+
+```bash
+# Generate once and keep it somewhere safe (vault, .envrc, ...).
+export AUTHLET_MASTER_KEY=$(openssl rand -base64 32)
+
+go run ./cmd/authletd --master-key-b64 "$AUTHLET_MASTER_KEY" ...
+# (--master-key-b64 defaults to AUTHLET_MASTER_KEY, so the explicit
+# flag is optional when the env var is exported.)
+```
+
+The Manager also rotates signing keys on its own schedule when
+`RunCleanup` ticks — so even with a stable master key, expect
+in-flight tokens to switch kids every `RotationInterval`.
+
 ## 2. Run a stub resource server (`/mcp`)
 
 Create `cmd/stub-rs/main.go` only when you need it — it is not part of the
@@ -50,6 +71,10 @@ If all six steps succeed, you can ship to a real RS (Hilo / Memory MCP).
 - **401 loop**: Inspector probably can't reach the PRM URL. Check the PRM
   is mounted at `/.well-known/oauth-protected-resource/...` and not under
   `/oauth/...`. Strict RFC 9728 puts it at host root.
+- **POST to PRM URL gets 405**: `mcp.PRMHandler` is GET-only per
+  RFC 9728 §3 (the PRM is a static metadata document; clients MUST
+  fetch it via GET). If your client is POSTing, that's a client bug —
+  the AS is correct to reject.
 - **invalid_grant during /token**: PKCE verifier didn't match. Authletd
   expects S256 only. Inspector defaults to S256, so this usually means a
   resource mismatch between /authorize and /token — both must use the

@@ -1,10 +1,14 @@
 package as
 
 import (
+	"errors"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/eliminyro/authlet/pkg/storage"
 )
 
 // handleAuthorizeImpl validates the /authorize request, stashes a
@@ -40,7 +44,16 @@ func (a *AS) handleAuthorizeImpl(w http.ResponseWriter, r *http.Request) {
 	}
 	client, err := a.cfg.Storage.Clients().Get(r.Context(), clientID)
 	if err != nil {
-		writeOAuthError(w, http.StatusBadRequest, "invalid_client", "unknown client")
+		// Distinguish "client not in the table" (legitimate 400) from
+		// a backend storage failure (operator-visible 500). The
+		// previous code conflated both as invalid_client, which masked
+		// outages as a client misconfiguration.
+		if errors.Is(err, storage.ErrNotFound) {
+			writeOAuthError(w, http.StatusBadRequest, "invalid_client", "unknown client")
+			return
+		}
+		a.cfg.Logger.Error("authorize: client lookup failed", "err", err, "client_id", clientID)
+		writeOAuthError(w, http.StatusInternalServerError, "server_error", "client lookup failed")
 		return
 	}
 	if !redirectAllowed(client.RedirectURIs, redirect) {
@@ -62,9 +75,20 @@ func (a *AS) handleAuthorizeImpl(w http.ResponseWriter, r *http.Request) {
 		redirectError(w, r, redirect, clientState, "invalid_target", "resource indicator required")
 		return
 	}
+	// RFC 8707 §2: resource indicators MUST be absolute URIs and
+	// SHOULD use HTTPS. We allow http:// only for localhost to keep
+	// local development frictionless.
+	if ru, err := url.Parse(resource); err != nil || !ru.IsAbs() || ru.Scheme == "" {
+		redirectError(w, r, redirect, clientState, "invalid_target", "resource must be an absolute URI")
+		return
+	} else if ru.Scheme != "https" && !isLocalhost(ru.Host) {
+		redirectError(w, r, redirect, clientState, "invalid_target", "resource must use https (or http for localhost dev)")
+		return
+	}
 
 	stateKey, err := newStateKey()
 	if err != nil {
+		a.cfg.Logger.Error("authorize: state key gen failed", "err", err, "client_id", clientID)
 		redirectError(w, r, redirect, clientState, "server_error", "state gen failed")
 		return
 	}
@@ -103,6 +127,17 @@ func redirectError(w http.ResponseWriter, r *http.Request, redirectURI, state, e
 	}
 	u.RawQuery = qs.Encode()
 	http.Redirect(w, r, u.String(), http.StatusFound)
+}
+
+// isLocalhost reports whether host (which may include :port) refers to
+// the loopback. Used to grant the http://... resource exception for
+// local development while still requiring https for public hosts.
+func isLocalhost(host string) bool {
+	h, _, err := net.SplitHostPort(host)
+	if err != nil {
+		h = host
+	}
+	return h == "localhost" || strings.HasPrefix(h, "127.") || h == "::1"
 }
 
 // redirectAllowed reports whether the candidate redirect_uri matches one of

@@ -47,6 +47,18 @@ func TestClient_TouchUpdatesLastUsed(t *testing.T) {
 	}
 }
 
+// TestClient_TouchMissingReturnsNotFound documents the contract: Touch
+// on an unknown clientID returns ErrNotFound rather than silently
+// succeeding. Handlers fire Touch on every grant; the test prevents a
+// regression where a deleted client could resurrect via Touch.
+func TestClient_TouchMissingReturnsNotFound(t *testing.T) {
+	s := New()
+	err := s.Clients().Touch(context.Background(), "no-such-client")
+	if !errors.Is(err, storage.ErrNotFound) {
+		t.Fatalf("expected ErrNotFound, got %v", err)
+	}
+}
+
 func TestClient_DeleteExpired(t *testing.T) {
 	s := New()
 	ctx := context.Background()

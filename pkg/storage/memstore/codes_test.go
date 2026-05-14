@@ -65,3 +65,17 @@ func TestCode_ExpiredCodeRejected(t *testing.T) {
 		t.Fatalf("expected ErrAlreadyConsumed, got %v", err)
 	}
 }
+
+// TestCode_ConsumeOnceUnknownReturnsNotFound documents the contract
+// from CodeStore.ConsumeOnce: an unknown hash yields ErrNotFound, not
+// ErrAlreadyConsumed. The two errors are distinguishable so callers
+// that want to log the difference can do so, even though both mean
+// "code is no longer valid".
+func TestCode_ConsumeOnceUnknownReturnsNotFound(t *testing.T) {
+	s := New()
+	ctx := context.Background()
+	_, err := s.Codes().ConsumeOnce(ctx, "never-saved")
+	if !errors.Is(err, storage.ErrNotFound) {
+		t.Fatalf("expected ErrNotFound for unknown code, got %v", err)
+	}
+}

@@ -47,6 +47,7 @@ func (a *AS) handleIDPCallbackImpl(w http.ResponseWriter, r *http.Request) {
 
 	claims, err := a.cfg.Upstream.Exchange(r.Context(), upstreamCode)
 	if err != nil {
+		a.cfg.Logger.Error("callback: upstream exchange failed", "err", err, "client_id", pending.ClientID)
 		http.Error(w, "upstream exchange failed", http.StatusBadGateway)
 		return
 	}
@@ -58,6 +59,7 @@ func (a *AS) handleIDPCallbackImpl(w http.ResponseWriter, r *http.Request) {
 
 	codePlain, err := randomID(32)
 	if err != nil {
+		a.cfg.Logger.Error("callback: code gen failed", "err", err, "client_id", pending.ClientID)
 		http.Error(w, "code gen failed", http.StatusInternalServerError)
 		return
 	}
@@ -74,6 +76,7 @@ func (a *AS) handleIDPCallbackImpl(w http.ResponseWriter, r *http.Request) {
 		RedirectURI:   pending.RedirectURI,
 		ExpiresAt:     expires,
 	}); err != nil {
+		a.cfg.Logger.Error("callback: code save failed", "err", err, "client_id", pending.ClientID)
 		http.Error(w, "code save failed", http.StatusInternalServerError)
 		return
 	}

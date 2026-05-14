@@ -41,17 +41,22 @@ type ClientStore interface {
 // atomic — exactly one caller can redeem a given code.
 type CodeStore interface {
 	Save(ctx context.Context, code AuthCode) error
-	// ConsumeOnce atomically reads and deletes (or marks consumed) the
-	// code identified by codeHash, returning it on success.
+	// ConsumeOnce atomically reads and deletes a code by its hash,
+	// returning the AuthCode value if it was both present and not
+	// expired.
 	//
-	// It returns ErrNotFound when the code does not exist (including
-	// the case where it was previously consumed by a delete-on-read
-	// implementation such as memstore).
+	// Returns:
+	//   - (*AuthCode, nil) — code existed, not expired; entry now deleted
+	//   - (nil, ErrNotFound) — code did not exist (or was already
+	//     consumed by a previous successful ConsumeOnce; memstore deletes
+	//     on consume so replay yields ErrNotFound)
+	//   - (nil, ErrAlreadyConsumed) — code existed but had expired;
+	//     the entry is also deleted as a side-effect, so a subsequent
+	//     call for the same hash returns ErrNotFound
 	//
-	// It returns ErrAlreadyConsumed only when the implementation tracks
-	// consumed-but-undeleted state. Memstore deletes on consume, so
-	// replay attempts produce ErrNotFound rather than ErrAlreadyConsumed.
-	// Callers should treat both errors as "code is no longer valid".
+	// Callers should treat both ErrNotFound and ErrAlreadyConsumed as
+	// "code is no longer valid"; the distinction is informational
+	// (useful for diagnostics).
 	ConsumeOnce(ctx context.Context, codeHash string) (*AuthCode, error)
 	DeleteExpired(ctx context.Context, before time.Time) (int, error)
 }

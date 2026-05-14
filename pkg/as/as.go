@@ -87,6 +87,7 @@ func (a *AS) OIDCMetadataHandler(w http.ResponseWriter, _ *http.Request) {
 func (a *AS) JWKSHandler(w http.ResponseWriter, r *http.Request) {
 	jwks, err := a.cfg.KeyManager.PublishJWKS(r.Context())
 	if err != nil {
+		a.cfg.Logger.Error("jwks: publish failed", "err", err)
 		http.Error(w, "jwks unavailable", http.StatusInternalServerError)
 		return
 	}

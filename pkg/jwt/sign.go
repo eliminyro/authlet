@@ -20,6 +20,7 @@ type Claims struct {
 	Scope     string         `json:"scope"`
 	IssuedAt  int64          `json:"iat"`
 	ExpiresAt int64          `json:"exp"`
+	NotBefore int64          `json:"nbf,omitempty"`
 	JTI       string         `json:"jti"`
 	Extra     map[string]any `json:"-"`
 }
@@ -36,8 +37,15 @@ func Sign(c Claims, kid string, priv *rsa.PrivateKey) (string, error) {
 		"exp":       c.ExpiresAt,
 		"jti":       c.JTI,
 	}
+	if c.NotBefore > 0 {
+		mc["nbf"] = c.NotBefore
+	}
 	for k, v := range c.Extra {
 		if _, reserved := mc[k]; reserved {
+			continue
+		}
+		// "nbf" is also reserved when set.
+		if k == "nbf" && c.NotBefore > 0 {
 			continue
 		}
 		mc[k] = v
@@ -64,6 +72,9 @@ var (
 	// ErrExpired is returned when the token's exp claim is at or before
 	// VerifyOptions.Now.
 	ErrExpired = errors.New("jwt: expired")
+	// ErrNotYetValid is returned when the token's nbf claim is in the
+	// future relative to VerifyOptions.Now.
+	ErrNotYetValid = errors.New("jwt: not yet valid")
 )
 
 // VerifyOptions narrows what Verify will accept. Zero values disable the
@@ -107,12 +118,13 @@ func Verify(tokenString string, resolve PublicKeyFunc, opts VerifyOptions) (Clai
 		Scope:     asString(mc["scope"]),
 		IssuedAt:  asInt64(mc["iat"]),
 		ExpiresAt: asInt64(mc["exp"]),
+		NotBefore: asInt64(mc["nbf"]),
 		JTI:       asString(mc["jti"]),
 		Extra:     map[string]any{},
 	}
 	for k, v := range mc {
 		switch k {
-		case "iss", "sub", "aud", "client_id", "scope", "iat", "exp", "jti":
+		case "iss", "sub", "aud", "client_id", "scope", "iat", "exp", "nbf", "jti":
 			continue
 		default:
 			c.Extra[k] = v
@@ -123,6 +135,9 @@ func Verify(tokenString string, resolve PublicKeyFunc, opts VerifyOptions) (Clai
 	}
 	if opts.ExpectedAudience != "" && c.Audience != opts.ExpectedAudience {
 		return c, ErrInvalidAud
+	}
+	if c.NotBefore > 0 && opts.Now().Unix() < c.NotBefore {
+		return c, ErrNotYetValid
 	}
 	if c.ExpiresAt > 0 && opts.Now().Unix() >= c.ExpiresAt {
 		return c, ErrExpired

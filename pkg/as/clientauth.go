@@ -6,12 +6,18 @@ import (
 	"net/http"
 	"net/url"
 
+	"github.com/eliminyro/authlet/pkg/storage"
 	"golang.org/x/crypto/bcrypt"
 )
 
 var (
 	errClientAuthRequired = errors.New("client_authentication_required")
 	errClientAuthFailed   = errors.New("client_authentication_failed")
+	// errClientLookupFailed is returned by authenticateClient when
+	// Clients.Get returns a non-ErrNotFound error (i.e. a backend
+	// storage failure). Callers map this to a 500 server_error instead
+	// of the misleading 401 invalid_client.
+	errClientLookupFailed = errors.New("client_lookup_failed")
 )
 
 // authenticateClient resolves the request to a registered Client. For
@@ -52,7 +58,11 @@ func (a *AS) authenticateClient(ctx context.Context, r *http.Request) (string, e
 
 	cl, err := a.cfg.Storage.Clients().Get(ctx, clientID)
 	if err != nil {
-		return "", errClientAuthFailed
+		if errors.Is(err, storage.ErrNotFound) {
+			return "", errClientAuthFailed
+		}
+		a.cfg.Logger.Error("clientauth: storage lookup failed", "err", err, "client_id", clientID)
+		return "", errClientLookupFailed
 	}
 
 	switch cl.TokenEndpointAuthMethod {

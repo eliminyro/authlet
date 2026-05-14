@@ -108,6 +108,7 @@ func main() {
 	mux.Handle("/mcp", dualAuth(bearer, mcpHandler))
 	mux.Handle("/mcp/", dualAuth(bearer, mcpHandler))
 
-	go server.RunCleanup(ctx, time.Hour)
+	// RunCleanup spawns its own goroutine; discard the done channel.
+	_ = server.RunCleanup(ctx, time.Hour)
 	_ = http.ListenAndServe(":8090", mux) //nolint:gosec // example only; no timeouts configured
 }

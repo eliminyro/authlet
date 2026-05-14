@@ -129,6 +129,16 @@ func (c *JWKSClient) refreshLocked(ctx context.Context) error {
 		eBI := new(big.Int).SetBytes(eBytes)
 		newCache[k.Kid] = &rsa.PublicKey{N: new(big.Int).SetBytes(nBytes), E: int(eBI.Int64())}
 	}
+	// Guard against a parsed-zero-keys response replacing a healthy
+	// cache. If the upstream JWKS endpoint serves malformed JSON or
+	// only non-RS256 keys we'd otherwise wipe the cache and trigger a
+	// silent DoS where every Bearer token returns 401 ErrNoKey. Keep
+	// the existing cache and return an error instead so the caller can
+	// log + retry. The cache TTL stays untouched so the next call
+	// refreshes again.
+	if len(newCache) == 0 {
+		return fmt.Errorf("jwks: parsed 0 usable keys (response had %d total)", len(doc.Keys))
+	}
 	c.cache = newCache
 	c.expiresAt = time.Now().Add(c.cacheTTL)
 	c.etag = resp.Header.Get("ETag")

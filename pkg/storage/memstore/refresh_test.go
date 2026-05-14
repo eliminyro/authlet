@@ -82,3 +82,47 @@ func TestRefresh_DeleteExpired(t *testing.T) {
 		t.Fatalf("expected 1 deleted, got %d", n)
 	}
 }
+
+// TestRefresh_DeleteExpiredAlsoCleansRevoked asserts that
+// DeleteExpired prunes entries from the internal revoked-family map
+// when no surviving tokens reference that family. Without this the
+// revoked map grows unbounded over the AS's lifetime.
+func TestRefresh_DeleteExpiredAlsoCleansRevoked(t *testing.T) {
+	s := New()
+	ctx := context.Background()
+	// Family A: token expired AND revoked — both should be cleaned up.
+	_ = s.RefreshTokens().Save(ctx, storage.RefreshToken{
+		TokenHash: "expA", FamilyID: "famA", ExpiresAt: time.Now().Add(-time.Hour),
+	})
+	_ = s.RefreshTokens().RevokeFamily(ctx, "famA")
+	// Family B: token still valid AND revoked — must be retained.
+	_ = s.RefreshTokens().Save(ctx, storage.RefreshToken{
+		TokenHash: "liveB", FamilyID: "famB", ExpiresAt: time.Now().Add(time.Hour),
+	})
+	_ = s.RefreshTokens().RevokeFamily(ctx, "famB")
+
+	if n, _ := s.RefreshTokens().DeleteExpired(ctx, time.Now()); n != 1 {
+		t.Fatalf("expected 1 expired token deleted, got %d", n)
+	}
+	// famA should no longer be marked revoked (no surviving tokens).
+	revA, _ := s.RefreshTokens().IsFamilyRevoked(ctx, "famA")
+	if revA {
+		t.Fatal("famA should be pruned from revoked map after last token expired")
+	}
+	// famB still has a live token: must remain revoked.
+	revB, _ := s.RefreshTokens().IsFamilyRevoked(ctx, "famB")
+	if !revB {
+		t.Fatal("famB must remain revoked while it has surviving tokens")
+	}
+}
+
+// TestRefresh_MarkUsedNotFound documents the contract: MarkUsed on an
+// unknown hash returns ErrNotFound, distinct from ErrAlreadyConsumed
+// (which signals reuse).
+func TestRefresh_MarkUsedNotFound(t *testing.T) {
+	s := New()
+	err := s.RefreshTokens().MarkUsed(context.Background(), "never-saved", "anything")
+	if !errors.Is(err, storage.ErrNotFound) {
+		t.Fatalf("expected ErrNotFound, got %v", err)
+	}
+}
