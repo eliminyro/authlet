@@ -3,6 +3,7 @@ package jwt
 import (
 	"context"
 	"crypto/rand"
+	"sync"
 	"testing"
 	"time"
 
@@ -136,6 +137,78 @@ func TestManager_UnknownKIDFromCache(t *testing.T) {
 	if _, err := resolve("nonexistent"); err == nil {
 		t.Fatal("expected error for unknown kid")
 	}
+}
+
+// TestManager_SetNowIsRaceFree exercises SetNow concurrently with
+// PublishJWKS (which reads m.now) under -race to verify the mutex.
+func TestManager_SetNowIsRaceFree(t *testing.T) {
+	m, _ := newManager(t)
+	_ = m.Bootstrap(context.Background())
+	var wg sync.WaitGroup
+	stop := make(chan struct{})
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		t0 := time.Now()
+		for i := 0; ; i++ {
+			select {
+			case <-stop:
+				return
+			default:
+				m.SetNow(func() time.Time { return t0.Add(time.Duration(i) * time.Second) })
+			}
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				_, _ = m.PublishJWKS(context.Background())
+			}
+		}
+	}()
+	time.Sleep(50 * time.Millisecond)
+	close(stop)
+	wg.Wait()
+}
+
+// TestManager_SignerConcurrent exercises Signer from multiple goroutines
+// to confirm the double-checked locking introduced in F11 is race-free.
+func TestManager_SignerConcurrent(t *testing.T) {
+	m, _ := newManager(t)
+	_ = m.Bootstrap(context.Background())
+	const N = 32
+	var wg sync.WaitGroup
+	wg.Add(N)
+	for i := 0; i < N; i++ {
+		go func() {
+			defer wg.Done()
+			_, _, _ = m.Signer(context.Background())
+		}()
+	}
+	wg.Wait()
+}
+
+// TestManager_PublicKeyFuncConcurrent exercises PublicKeyFunc lookups in
+// parallel to confirm cache merges (vs wipes) don't race.
+func TestManager_PublicKeyFuncConcurrent(t *testing.T) {
+	m, store := newManager(t)
+	_ = m.Bootstrap(context.Background())
+	signer, _ := store.SigningKeys().GetSigner(context.Background())
+	resolve := m.PublicKeyFunc(context.Background())
+	const N = 32
+	var wg sync.WaitGroup
+	wg.Add(N)
+	for i := 0; i < N; i++ {
+		go func() {
+			defer wg.Done()
+			_, _ = resolve(signer.ID)
+		}()
+	}
+	wg.Wait()
 }
 
 var _ = storage.ErrNotFound // keep import

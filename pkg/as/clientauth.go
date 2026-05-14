@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"net/url"
 
 	"golang.org/x/crypto/bcrypt"
 )
@@ -21,6 +22,21 @@ var (
 // Returns the resolved client_id on success.
 func (a *AS) authenticateClient(ctx context.Context, r *http.Request) (string, error) {
 	basicID, basicSecret, hasBasic := r.BasicAuth()
+	if hasBasic {
+		// RFC 6749 §2.3.1: the client_id and client_secret in the
+		// Authorization header are application/x-www-form-urlencoded
+		// before base64-encoding. Decode after the base64 step.
+		decodedID, err := url.QueryUnescape(basicID)
+		if err != nil {
+			return "", errClientAuthFailed
+		}
+		decodedSecret, err := url.QueryUnescape(basicSecret)
+		if err != nil {
+			return "", errClientAuthFailed
+		}
+		basicID = decodedID
+		basicSecret = decodedSecret
+	}
 	bodyID := r.Form.Get("client_id")
 
 	clientID := basicID

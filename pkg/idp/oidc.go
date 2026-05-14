@@ -75,5 +75,24 @@ func (p *OIDCProvider) Exchange(ctx context.Context, code string) (Claims, error
 // Issuer returns the upstream issuer URL this provider was configured with.
 func (p *OIDCProvider) Issuer() string { return p.issuer }
 
+// NewForTest is a test-only helper that constructs an OIDCProvider with
+// stub-but-non-nil internals so it satisfies Configured() without doing
+// network discovery. Use from external test packages only.
+func NewForTest(issuerURL string) *OIDCProvider {
+	return &OIDCProvider{
+		issuer:       issuerURL,
+		verifier:     &oidc.IDTokenVerifier{},
+		oauth2Config: &oauth2.Config{},
+	}
+}
+
+// Configured reports whether the provider was constructed via NewOIDC.
+// A zero-valued *OIDCProvider is not configured and will panic if used,
+// so callers (notably as.Config.validate) check this rather than just a
+// nil pointer.
+func (p *OIDCProvider) Configured() bool {
+	return p != nil && p.verifier != nil && p.oauth2Config != nil
+}
+
 func asString(v any) string { s, _ := v.(string); return s }
 func asBool(v any) bool     { b, _ := v.(bool); return b }

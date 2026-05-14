@@ -13,13 +13,15 @@ import (
 // handleIDPCallbackImpl finishes the upstream OIDC login: it validates the
 // state cookie + query, exchanges the upstream code for claims, resolves
 // the internal user, mints a one-time authorization code, and 302s back to
-// the client's redirect_uri with code + original state.
+// the client's redirect_uri with code + original state. Upstream OAuth
+// errors (e.g. ?error=access_denied) are forwarded to the client.
 func (a *AS) handleIDPCallbackImpl(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	stateKey := q.Get("state")
 	upstreamCode := q.Get("code")
-	if stateKey == "" || upstreamCode == "" {
-		http.Error(w, "missing state or code", http.StatusBadRequest)
+	upstreamErr := q.Get("error")
+	if stateKey == "" {
+		http.Error(w, "missing state", http.StatusBadRequest)
 		return
 	}
 	cookieState, ok := a.readStateCookie(r)
@@ -30,6 +32,16 @@ func (a *AS) handleIDPCallbackImpl(w http.ResponseWriter, r *http.Request) {
 	pending, ok := a.states.Consume(stateKey)
 	if !ok {
 		http.Error(w, "state expired or unknown", http.StatusBadRequest)
+		return
+	}
+
+	// Forward upstream OAuth errors to the client per RFC 6749 §4.1.2.1.
+	if upstreamErr != "" {
+		redirectError(w, r, pending.RedirectURI, pending.State, upstreamErr, q.Get("error_description"))
+		return
+	}
+	if upstreamCode == "" {
+		http.Error(w, "missing code", http.StatusBadRequest)
 		return
 	}
 

@@ -29,8 +29,14 @@ type PRM struct {
 // PRMHandler returns an http.HandlerFunc that serves the given PRM document
 // as JSON with a public Cache-Control header. Mount it at the
 // .well-known/oauth-protected-resource path appropriate for the resource.
+// Only GET is accepted; other methods receive 405.
 func PRMHandler(p PRM) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			w.Header().Set("Allow", "GET")
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Cache-Control", "public, max-age=3600")
 		_ = json.NewEncoder(w).Encode(p)

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"net/url"
 	"time"
 
 	"github.com/eliminyro/authlet/pkg/storage"
@@ -46,6 +47,22 @@ func (a *AS) handleRegisterImpl(w http.ResponseWriter, r *http.Request) {
 	for _, u := range req.RedirectURIs {
 		if u == "" {
 			writeOAuthError(w, http.StatusBadRequest, "invalid_redirect_uri", errInvalidRedirect.Error())
+			return
+		}
+		// RFC 7591 §2.3.1 / RFC 6749 §3.1.2: redirect_uris MUST be
+		// absolute URIs and MUST NOT contain a fragment component.
+		parsed, err := url.Parse(u)
+		if err != nil || !parsed.IsAbs() || parsed.Fragment != "" {
+			writeOAuthError(w, http.StatusBadRequest, "invalid_redirect_uri", errInvalidRedirect.Error())
+			return
+		}
+	}
+	// RFC 7591 §2: validate grant_types — we only support
+	// authorization_code and refresh_token. Unknown values are rejected
+	// rather than silently dropped, so misconfigured clients fail fast.
+	for _, g := range req.GrantTypes {
+		if g != "authorization_code" && g != "refresh_token" {
+			writeOAuthError(w, http.StatusBadRequest, "invalid_client_metadata", "unsupported grant_type: "+g)
 			return
 		}
 	}

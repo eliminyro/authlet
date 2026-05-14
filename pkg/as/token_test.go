@@ -71,6 +71,60 @@ func TestToken_AuthCodeHappyPath(t *testing.T) {
 	if tr.TokenType != "Bearer" || tr.ExpiresIn <= 0 {
 		t.Fatalf("bad shape: %+v", tr)
 	}
+	if w.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("missing Cache-Control: no-store, got %q", w.Header().Get("Cache-Control"))
+	}
+	if w.Header().Get("Pragma") != "no-cache" {
+		t.Fatalf("missing Pragma: no-cache, got %q", w.Header().Get("Pragma"))
+	}
+}
+
+// TestToken_AdditionalClaimsPanicRecovered asserts a panicking
+// AdditionalClaims hook is recovered and the token is still issued.
+func TestToken_AdditionalClaimsPanicRecovered(t *testing.T) {
+	a := newTestAS(t)
+	a.cfg.AdditionalClaims = func(userID, clientID, resource string) map[string]any {
+		panic("boom")
+	}
+	cid := registerTestClient(t, a, "https://claude/cb")
+	verifier, challenge := pkcePair(t)
+	code := seedAuthCode(t, a, cid, "https://claude/cb", "https://rs/api", challenge)
+
+	form := url.Values{}
+	form.Set("grant_type", "authorization_code")
+	form.Set("code", code)
+	form.Set("client_id", cid)
+	form.Set("code_verifier", verifier)
+	form.Set("redirect_uri", "https://claude/cb")
+	form.Set("resource", "https://rs/api")
+
+	req := httptest.NewRequest(http.MethodPost, "/token", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+	a.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 (panic recovered), got %d body=%s", w.Code, w.Body.String())
+	}
+}
+
+// TestToken_ErrorResponseHasCacheControl verifies the no-store/no-cache
+// headers are also set on /token error responses (RFC 6749 §5.1).
+func TestToken_ErrorResponseHasCacheControl(t *testing.T) {
+	a := newTestAS(t)
+	cid := registerTestClient(t, a, "https://claude/cb")
+	form := url.Values{}
+	form.Set("grant_type", "unknown")
+	form.Set("client_id", cid)
+	req := httptest.NewRequest(http.MethodPost, "/token", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+	a.Handler().ServeHTTP(w, req)
+	if w.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("missing Cache-Control on error, got %q", w.Header().Get("Cache-Control"))
+	}
+	if w.Header().Get("Pragma") != "no-cache" {
+		t.Fatalf("missing Pragma on error, got %q", w.Header().Get("Pragma"))
+	}
 }
 
 func TestToken_RejectsBadPKCE(t *testing.T) {
@@ -116,6 +170,45 @@ func TestToken_RejectsResourceMismatch(t *testing.T) {
 	a.Handler().ServeHTTP(w, req)
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("status %d", w.Code)
+	}
+}
+
+// TestToken_RejectsNonS256PKCEMethod asserts the token endpoint rejects
+// authorization codes whose stored PKCEMethod is anything other than S256,
+// even if /authorize already enforces S256 at intake. This is
+// defense-in-depth against a malicious or buggy storage driver.
+func TestToken_RejectsNonS256PKCEMethod(t *testing.T) {
+	a := newTestAS(t)
+	cid := registerTestClient(t, a, "https://claude/cb")
+	verifier, challenge := pkcePair(t)
+	// Save a code with PKCEMethod="plain" instead of "S256".
+	plain, _ := randomID(32)
+	_ = a.cfg.Storage.Codes().Save(context.Background(), storage.AuthCode{
+		CodeHash:      hashCode(plain),
+		ClientID:      cid,
+		UserID:        "u",
+		Resource:      "https://rs/api",
+		Scope:         "mcp",
+		PKCEChallenge: challenge,
+		PKCEMethod:    "plain",
+		RedirectURI:   "https://claude/cb",
+		ExpiresAt:     time.Now().Add(10 * time.Minute),
+	})
+
+	form := url.Values{}
+	form.Set("grant_type", "authorization_code")
+	form.Set("code", plain)
+	form.Set("client_id", cid)
+	form.Set("code_verifier", verifier)
+	form.Set("redirect_uri", "https://claude/cb")
+	form.Set("resource", "https://rs/api")
+
+	req := httptest.NewRequest(http.MethodPost, "/token", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+	a.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 (plain PKCE rejected), got %d body=%s", w.Code, w.Body.String())
 	}
 }
 
