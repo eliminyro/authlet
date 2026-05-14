@@ -173,6 +173,45 @@ func TestToken_RejectsResourceMismatch(t *testing.T) {
 	}
 }
 
+// TestToken_RejectsNonS256PKCEMethod asserts the token endpoint rejects
+// authorization codes whose stored PKCEMethod is anything other than S256,
+// even if /authorize already enforces S256 at intake. This is
+// defense-in-depth against a malicious or buggy storage driver.
+func TestToken_RejectsNonS256PKCEMethod(t *testing.T) {
+	a := newTestAS(t)
+	cid := registerTestClient(t, a, "https://claude/cb")
+	verifier, challenge := pkcePair(t)
+	// Save a code with PKCEMethod="plain" instead of "S256".
+	plain, _ := randomID(32)
+	_ = a.cfg.Storage.Codes().Save(context.Background(), storage.AuthCode{
+		CodeHash:      hashCode(plain),
+		ClientID:      cid,
+		UserID:        "u",
+		Resource:      "https://rs/api",
+		Scope:         "mcp",
+		PKCEChallenge: challenge,
+		PKCEMethod:    "plain",
+		RedirectURI:   "https://claude/cb",
+		ExpiresAt:     time.Now().Add(10 * time.Minute),
+	})
+
+	form := url.Values{}
+	form.Set("grant_type", "authorization_code")
+	form.Set("code", plain)
+	form.Set("client_id", cid)
+	form.Set("code_verifier", verifier)
+	form.Set("redirect_uri", "https://claude/cb")
+	form.Set("resource", "https://rs/api")
+
+	req := httptest.NewRequest(http.MethodPost, "/token", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+	a.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 (plain PKCE rejected), got %d body=%s", w.Code, w.Body.String())
+	}
+}
+
 func TestToken_CodeIsSingleUse(t *testing.T) {
 	a := newTestAS(t)
 	cid := registerTestClient(t, a, "https://claude/cb")

@@ -83,6 +83,13 @@ func (a *AS) tokenAuthCode(w http.ResponseWriter, r *http.Request) {
 		writeOAuthError(w, http.StatusBadRequest, "invalid_grant", "binding mismatch")
 		return
 	}
+	// Defense-in-depth: only S256 is accepted. /authorize already
+	// enforces this, but a malicious or buggy storage driver could hand
+	// us a different method.
+	if authCode.PKCEMethod != "S256" {
+		writeOAuthError(w, http.StatusBadRequest, "invalid_grant", "pkce method unsupported")
+		return
+	}
 	if !verifyPKCE(authCode.PKCEChallenge, verifier) {
 		writeOAuthError(w, http.StatusBadRequest, "invalid_grant", "pkce verification failed")
 		return
