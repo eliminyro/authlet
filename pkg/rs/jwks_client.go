@@ -95,7 +95,7 @@ func (c *JWKSClient) refresh(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("jwks fetch: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode == http.StatusNotModified {
 		c.mu.Lock()
 		c.expiresAt = time.Now().Add(c.cacheTTL)
