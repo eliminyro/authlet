@@ -8,7 +8,8 @@ import (
 
 // AS is the assembled authorization server.
 type AS struct {
-	cfg *Config
+	cfg    *Config
+	states *stateStore
 }
 
 // New validates the config and returns an AS.
@@ -17,7 +18,7 @@ func New(cfg Config) (*AS, error) {
 		return nil, err
 	}
 	cfg.defaults()
-	return &AS{cfg: &cfg}, nil
+	return &AS{cfg: &cfg, states: newStateStore()}, nil
 }
 
 // Config returns the live config (read-only).
@@ -48,8 +49,8 @@ func (a *AS) Handler() http.Handler {
 	return r
 }
 
-func (a *AS) handleAuthorize(w http.ResponseWriter, _ *http.Request) {
-	http.Error(w, "not implemented", http.StatusNotImplemented)
+func (a *AS) handleAuthorize(w http.ResponseWriter, r *http.Request) {
+	a.handleAuthorizeImpl(w, r)
 }
 
 func (a *AS) handleToken(w http.ResponseWriter, _ *http.Request) {
