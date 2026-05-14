@@ -358,7 +358,22 @@ func (a *AS) safeIDTokenClaims(userID string) (email string, emailVerified bool,
 
 // verifyPKCE returns true if sha256(verifier) base64url-no-pad equals the
 // stored S256 challenge.
+//
+// Per RFC 7636 §4.1 a valid code_verifier is 43–128 characters from
+// the unreserved set [A-Z][a-z][0-9]-._~. Validate length and charset
+// up front so a buggy or hostile client cannot bypass the spec by
+// presenting an arbitrarily short / non-ASCII string that happens to
+// hash to a known challenge.
 func verifyPKCE(challenge, verifier string) bool {
+	if len(verifier) < 43 || len(verifier) > 128 {
+		return false
+	}
+	for _, c := range verifier {
+		if !(c >= 'A' && c <= 'Z') && !(c >= 'a' && c <= 'z') &&
+			!(c >= '0' && c <= '9') && c != '-' && c != '.' && c != '_' && c != '~' {
+			return false
+		}
+	}
 	sum := sha256.Sum256([]byte(verifier))
 	enc := strings.TrimRight(base64.URLEncoding.EncodeToString(sum[:]), "=")
 	enc = strings.ReplaceAll(enc, "+", "-")
