@@ -1,10 +1,13 @@
 package as
 
 import (
+	"errors"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/eliminyro/authlet/pkg/storage"
 )
 
 // handleAuthorizeImpl validates the /authorize request, stashes a
@@ -40,7 +43,16 @@ func (a *AS) handleAuthorizeImpl(w http.ResponseWriter, r *http.Request) {
 	}
 	client, err := a.cfg.Storage.Clients().Get(r.Context(), clientID)
 	if err != nil {
-		writeOAuthError(w, http.StatusBadRequest, "invalid_client", "unknown client")
+		// Distinguish "client not in the table" (legitimate 400) from
+		// a backend storage failure (operator-visible 500). The
+		// previous code conflated both as invalid_client, which masked
+		// outages as a client misconfiguration.
+		if errors.Is(err, storage.ErrNotFound) {
+			writeOAuthError(w, http.StatusBadRequest, "invalid_client", "unknown client")
+			return
+		}
+		a.cfg.Logger.Error("authorize: client lookup failed", "err", err, "client_id", clientID)
+		writeOAuthError(w, http.StatusInternalServerError, "server_error", "client lookup failed")
 		return
 	}
 	if !redirectAllowed(client.RedirectURIs, redirect) {

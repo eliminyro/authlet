@@ -28,6 +28,8 @@ func (a *AS) handleRevokeImpl(w http.ResponseWriter, r *http.Request) {
 		case errors.Is(err, errClientAuthRequired):
 			w.Header().Set("WWW-Authenticate", `Basic realm="authlet"`)
 			writeOAuthError(w, http.StatusUnauthorized, "invalid_client", "client authentication required")
+		case errors.Is(err, errClientLookupFailed):
+			writeOAuthError(w, http.StatusInternalServerError, "server_error", "client lookup failed")
 		default:
 			writeOAuthError(w, http.StatusUnauthorized, "invalid_client", "client authentication failed")
 		}

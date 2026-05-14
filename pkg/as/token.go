@@ -50,6 +50,10 @@ func (a *AS) handleTokenImpl(w http.ResponseWriter, r *http.Request) {
 		case errors.Is(err, errClientAuthRequired):
 			w.Header().Set("WWW-Authenticate", `Basic realm="authlet"`)
 			writeOAuthError(w, http.StatusUnauthorized, "invalid_client", "client authentication required")
+		case errors.Is(err, errClientLookupFailed):
+			// Backend storage failure during client lookup. Do NOT
+			// disclose this to the client as an auth failure.
+			writeOAuthError(w, http.StatusInternalServerError, "server_error", "client lookup failed")
 		default:
 			writeOAuthError(w, http.StatusUnauthorized, "invalid_client", "client authentication failed")
 		}
