@@ -10,7 +10,13 @@ import (
 // missing or unknown tokens still return 200 OK (silent success), and
 // confidential clients MUST be authenticated.
 func (a *AS) handleRevokeImpl(w http.ResponseWriter, r *http.Request) {
+	// Cap request body to 1 MiB. Revoke requests are tiny in practice.
+	r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
 	if err := r.ParseForm(); err != nil {
+		if isBodyTooLarge(err) {
+			writeOAuthError(w, http.StatusRequestEntityTooLarge, "invalid_request", "request body too large")
+			return
+		}
 		writeOAuthError(w, http.StatusBadRequest, "invalid_request", "form parse error")
 		return
 	}

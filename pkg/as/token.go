@@ -33,7 +33,14 @@ func (a *AS) handleTokenImpl(w http.ResponseWriter, r *http.Request) {
 	// every code path inherits the headers.
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Pragma", "no-cache")
+	// Cap request body to 1 MiB to guard against memory-exhaustion
+	// attacks. Token requests are well under 1 KB in practice.
+	r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
 	if err := r.ParseForm(); err != nil {
+		if isBodyTooLarge(err) {
+			writeOAuthError(w, http.StatusRequestEntityTooLarge, "invalid_request", "request body too large")
+			return
+		}
 		writeOAuthError(w, http.StatusBadRequest, "invalid_request", "form parse error")
 		return
 	}

@@ -89,3 +89,21 @@ func TestRegister_RejectsUnsupportedGrantType(t *testing.T) {
 		t.Fatalf("expected 400, got %d body=%s", w.Code, w.Body.String())
 	}
 }
+
+// TestRegister_RejectsOversizedBody asserts that a request body larger
+// than maxBodyBytes (1 MiB) is rejected with HTTP 413, not silently
+// truncated or accepted.
+func TestRegister_RejectsOversizedBody(t *testing.T) {
+	a := newTestAS(t)
+	// Build a 2 MiB body. JSON shape doesn't matter — MaxBytesReader
+	// will trip Decode before any field is parsed.
+	huge := strings.Repeat("a", 2<<20)
+	body := `{"redirect_uris":["https://x/cb"],"client_name":"` + huge + `"}`
+	req := httptest.NewRequest(http.MethodPost, "/register", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	a.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("expected 413 for oversized body, got %d body=%s", w.Code, w.Body.String())
+	}
+}

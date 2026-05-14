@@ -35,8 +35,17 @@ type dcrResponse struct {
 var errInvalidRedirect = errors.New("invalid redirect_uris")
 
 func (a *AS) handleRegisterImpl(w http.ResponseWriter, r *http.Request) {
+	// Cap request body to 1 MiB. A typical DCR request is well under 1
+	// KB; this guards against memory-exhaustion attacks from oversized
+	// JSON. MaxBytesReader makes Decode return a *MaxBytesError once the
+	// limit is exceeded.
+	r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
 	var req dcrRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		if isBodyTooLarge(err) {
+			writeOAuthError(w, http.StatusRequestEntityTooLarge, "invalid_request", "request body too large")
+			return
+		}
 		writeOAuthError(w, http.StatusBadRequest, "invalid_request", "malformed JSON")
 		return
 	}
