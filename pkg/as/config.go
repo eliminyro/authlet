@@ -6,6 +6,7 @@
 package as
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -57,13 +58,32 @@ type Config struct {
 	// AdditionalClaims is called when minting an access token. It returns
 	// app-specific claims to merge into the JWT (e.g. tenant_id for Memory).
 	// May be nil.
+	//
+	// Prefer AdditionalClaimsCtx for new code so request-scoped timeouts
+	// and tracing propagate into the hook's I/O. When both are set, the
+	// ctx-aware variant wins.
 	AdditionalClaims func(userID, clientID, resource string) map[string]any
+
+	// AdditionalClaimsCtx is the request-context-aware variant of
+	// AdditionalClaims. When set, it takes precedence over AdditionalClaims
+	// and receives the /token request's context, so any DB or RPC call
+	// inside the hook is bound by request-scoped deadlines and cancellation.
+	AdditionalClaimsCtx func(ctx context.Context, userID, clientID, resource string) map[string]any
 
 	// IDTokenClaims is called when the AS needs to mint an ID token (i.e.
 	// when the original auth request scope contained "openid"). It returns
 	// the standard OIDC ID token claims for the given user. If nil, the ID
 	// token is minted with only sub + iss + aud + iat + exp.
+	//
+	// Prefer IDTokenClaimsCtx for new code so request-scoped timeouts and
+	// tracing propagate into the hook's I/O. When both are set, the
+	// ctx-aware variant wins.
 	IDTokenClaims func(userID string) (email string, emailVerified bool, name, picture string)
+
+	// IDTokenClaimsCtx is the request-context-aware variant of IDTokenClaims.
+	// When set, it takes precedence over IDTokenClaims and receives the
+	// /token request's context.
+	IDTokenClaimsCtx func(ctx context.Context, userID string) (email string, emailVerified bool, name, picture string)
 
 	// Logger receives diagnostic logs for every 500-class error path
 	// (signer-unavailable, sign-failed, storage failures, etc.) and
