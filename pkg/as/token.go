@@ -266,7 +266,7 @@ func (a *AS) mintTokens(ctx context.Context, userID, clientID, resource, scope s
 	now := time.Now()
 	exp := now.Add(a.cfg.AccessTokenTTL)
 	extra := map[string]any{}
-	for k, v := range a.safeAdditionalClaims(userID, clientID, resource) {
+	for k, v := range a.safeAdditionalClaims(ctx, userID, clientID, resource) {
 		extra[k] = v
 	}
 	claims := jwt.Claims{
@@ -297,7 +297,7 @@ func (a *AS) mintTokens(ctx context.Context, userID, clientID, resource, scope s
 		JTI:       uuid.NewString(),
 		Extra:     map[string]any{},
 	}
-	email, verified, name, pic := a.safeIDTokenClaims(userID)
+	email, verified, name, pic := a.safeIDTokenClaims(ctx, userID)
 	if email != "" {
 		idClaims.Extra["email"] = email
 		idClaims.Extra["email_verified"] = verified
@@ -324,15 +324,19 @@ var (
 
 // safeAdditionalClaims invokes the configured AdditionalClaims hook and
 // recovers from panics so a misbehaving claim provider cannot crash the
-// token endpoint. Returns nil on panic or when the hook is nil. Logs at
-// ERROR level on recovery so the broken hook is visible to operators.
-func (a *AS) safeAdditionalClaims(userID, clientID, resource string) (m map[string]any) {
+// token endpoint. Returns nil on panic or when no hook is configured.
+// Logs at ERROR level on recovery so the broken hook is visible to operators.
+// Prefers AdditionalClaimsCtx when both variants are set.
+func (a *AS) safeAdditionalClaims(ctx context.Context, userID, clientID, resource string) (m map[string]any) {
 	defer func() {
 		if rec := recover(); rec != nil {
 			a.cfg.Logger.Error("token: AdditionalClaims hook panicked", "recover", rec, "client_id", clientID)
 			m = nil
 		}
 	}()
+	if a.cfg.AdditionalClaimsCtx != nil {
+		return a.cfg.AdditionalClaimsCtx(ctx, userID, clientID, resource)
+	}
 	if a.cfg.AdditionalClaims == nil {
 		return nil
 	}
@@ -341,15 +345,18 @@ func (a *AS) safeAdditionalClaims(userID, clientID, resource string) (m map[stri
 
 // safeIDTokenClaims invokes the configured IDTokenClaims hook and recovers
 // from panics so a misbehaving claim provider cannot crash /token. Returns
-// zero values on panic or when the hook is nil. Logs at ERROR level on
-// recovery.
-func (a *AS) safeIDTokenClaims(userID string) (email string, emailVerified bool, name, picture string) {
+// zero values on panic or when no hook is configured. Logs at ERROR level
+// on recovery. Prefers IDTokenClaimsCtx when both variants are set.
+func (a *AS) safeIDTokenClaims(ctx context.Context, userID string) (email string, emailVerified bool, name, picture string) {
 	defer func() {
 		if rec := recover(); rec != nil {
 			a.cfg.Logger.Error("token: IDTokenClaims hook panicked", "recover", rec, "user_id", userID)
 			email, emailVerified, name, picture = "", false, "", ""
 		}
 	}()
+	if a.cfg.IDTokenClaimsCtx != nil {
+		return a.cfg.IDTokenClaimsCtx(ctx, userID)
+	}
 	if a.cfg.IDTokenClaims == nil {
 		return "", false, "", ""
 	}
