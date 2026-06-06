@@ -5,12 +5,14 @@ when:
 steps:
   - name: test
     image: ghcr.io/eliminyro/ci-tool:latest
+    pull: true
     commands:
       - go test -race -coverprofile=coverage.txt -covermode=atomic ./...
       - go test -race -tags=integration ./...
 
   - name: fmt
     image: ghcr.io/eliminyro/ci-tool:latest
+    pull: true
     commands:
       - gofmt -w .
       - git diff --exit-code HEAD
@@ -18,12 +20,14 @@ steps:
 
   - name: lint
     image: ghcr.io/eliminyro/ci-tool:latest
+    pull: true
     commands:
       - golangci-lint run
     depends_on: []
 
   - name: auto-merge
     image: ghcr.io/eliminyro/ci-tool:latest
+    pull: true
     environment:
       GH_TOKEN:
         from_secret: gh_repo_token
