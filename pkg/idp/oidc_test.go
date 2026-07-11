@@ -23,6 +23,7 @@ type fakeOIDC struct {
 	key      *rsa.PrivateKey
 	kid      string
 	clientID string
+	nonce    string
 }
 
 func newFakeOIDC(t *testing.T, clientID string) *fakeOIDC {
@@ -31,7 +32,7 @@ func newFakeOIDC(t *testing.T, clientID string) *fakeOIDC {
 	if err != nil {
 		t.Fatalf("rsa.GenerateKey: %v", err)
 	}
-	f := &fakeOIDC{key: k, kid: "fk1", clientID: clientID}
+	f := &fakeOIDC{key: k, kid: "fk1", clientID: clientID, nonce: "up-nonce"}
 	mux := http.NewServeMux()
 	var issuer string
 	mux.HandleFunc("/.well-known/openid-configuration", func(w http.ResponseWriter, _ *http.Request) {
@@ -55,7 +56,7 @@ func newFakeOIDC(t *testing.T, clientID string) *fakeOIDC {
 		})
 	})
 	mux.HandleFunc("/token", func(w http.ResponseWriter, _ *http.Request) {
-		id := makeIDToken(t, k, f.kid, issuer, clientID, "google-sub-123", "alice@example.com")
+		id := makeIDToken(t, k, f.kid, issuer, clientID, "google-sub-123", "alice@example.com", f.nonce)
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"access_token": "fake-at",
@@ -69,7 +70,7 @@ func newFakeOIDC(t *testing.T, clientID string) *fakeOIDC {
 	return f
 }
 
-func makeIDToken(t *testing.T, k *rsa.PrivateKey, kid, iss, aud, sub, email string) string {
+func makeIDToken(t *testing.T, k *rsa.PrivateKey, kid, iss, aud, sub, email, nonce string) string {
 	t.Helper()
 	tok := jwtv5.NewWithClaims(jwtv5.SigningMethodRS256, jwtv5.MapClaims{
 		"iss":            iss,
@@ -78,6 +79,7 @@ func makeIDToken(t *testing.T, k *rsa.PrivateKey, kid, iss, aud, sub, email stri
 		"email":          email,
 		"email_verified": true,
 		"name":           "Alice",
+		"nonce":          nonce,
 		"iat":            time.Now().Unix(),
 		"exp":            time.Now().Add(time.Hour).Unix(),
 	})
@@ -96,7 +98,7 @@ func TestOIDC_DiscoverAndExchange(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewOIDC: %v", err)
 	}
-	c, err := prov.Exchange(context.Background(), "any-code")
+	c, err := prov.Exchange(context.Background(), "any-code", "the-upstream-verifier-43chars-minimum-aaaaaaaa", f.nonce)
 	if err != nil {
 		t.Fatalf("Exchange: %v", err)
 	}
@@ -108,15 +110,42 @@ func TestOIDC_DiscoverAndExchange(t *testing.T) {
 	}
 }
 
-func TestOIDC_AuthURLContainsState(t *testing.T) {
+// TestOIDC_ExchangeRejectsNonceMismatch asserts that an upstream id_token
+// whose nonce differs from the per-flow nonce is rejected — the core of
+// the upstream code-injection defense.
+func TestOIDC_ExchangeRejectsNonceMismatch(t *testing.T) {
+	f := newFakeOIDC(t, "client-A")
+	defer f.server.Close()
+	prov, err := NewOIDC(context.Background(), f.server.URL, "client-A", "secret", "https://app/callback", []string{"openid", "email"})
+	if err != nil {
+		t.Fatalf("NewOIDC: %v", err)
+	}
+	// The fake mints an id_token carrying f.nonce ("up-nonce"); expect a
+	// different nonce and require rejection.
+	_, err = prov.Exchange(context.Background(), "any-code", "the-upstream-verifier-43chars-minimum-aaaaaaaa", "attacker-nonce")
+	if err == nil {
+		t.Fatal("expected nonce-mismatch rejection, got nil error")
+	}
+	if !strings.Contains(err.Error(), "nonce") {
+		t.Fatalf("expected nonce error, got %v", err)
+	}
+}
+
+func TestOIDC_AuthURLContainsStateNonceAndPKCE(t *testing.T) {
 	f := newFakeOIDC(t, "client-A")
 	defer f.server.Close()
 	prov, err := NewOIDC(context.Background(), f.server.URL, "client-A", "secret", "https://app/cb", []string{"openid"})
 	if err != nil {
 		t.Fatalf("NewOIDC: %v", err)
 	}
-	u := prov.AuthURL("xyz")
+	u := prov.AuthURL("xyz", "n0nce", "the-upstream-verifier-43chars-minimum-aaaaaaaa")
 	if !strings.Contains(u, "state=xyz") {
 		t.Fatalf("state missing from %s", u)
+	}
+	if !strings.Contains(u, "nonce=n0nce") {
+		t.Fatalf("nonce missing from %s", u)
+	}
+	if !strings.Contains(u, "code_challenge=") || !strings.Contains(u, "code_challenge_method=S256") {
+		t.Fatalf("PKCE S256 challenge missing from %s", u)
 	}
 }

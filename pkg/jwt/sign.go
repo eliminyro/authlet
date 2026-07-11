@@ -72,6 +72,10 @@ var (
 	// ErrExpired is returned when the token's exp claim is at or before
 	// VerifyOptions.Now.
 	ErrExpired = errors.New("jwt: expired")
+	// ErrMissingExp is returned when the token has no exp claim, or a zero
+	// / non-positive one. RFC 9068 §4 requires access tokens to carry exp;
+	// a token without it would otherwise validate forever.
+	ErrMissingExp = errors.New("jwt: missing exp")
 	// ErrNotYetValid is returned when the token's nbf claim is in the
 	// future relative to VerifyOptions.Now.
 	ErrNotYetValid = errors.New("jwt: not yet valid")
@@ -139,7 +143,12 @@ func Verify(tokenString string, resolve PublicKeyFunc, opts VerifyOptions) (Clai
 	if c.NotBefore > 0 && opts.Now().Unix() < c.NotBefore {
 		return c, ErrNotYetValid
 	}
-	if c.ExpiresAt > 0 && opts.Now().Unix() >= c.ExpiresAt {
+	// exp is mandatory: a missing, zero, or non-positive exp is rejected
+	// outright rather than skipped, otherwise such a token never expires.
+	if c.ExpiresAt <= 0 {
+		return c, ErrMissingExp
+	}
+	if opts.Now().Unix() >= c.ExpiresAt {
 		return c, ErrExpired
 	}
 	return c, nil

@@ -120,7 +120,7 @@ func (a *AS) tokenAuthCode(w http.ResponseWriter, r *http.Request) {
 		writeOAuthError(w, http.StatusInternalServerError, "server_error", "refresh save failed")
 		return
 	}
-	a.mintAndWrite(w, r, authCode.UserID, authCode.ClientID, authCode.Resource, authCode.Scope, refreshPlain)
+	a.mintAndWrite(w, r, authCode.UserID, authCode.ClientID, authCode.Resource, authCode.Scope, refreshPlain, authCode.Nonce)
 }
 
 // tokenRefresh handles the refresh_token grant with rotation + reuse
@@ -164,10 +164,17 @@ func (a *AS) tokenRefresh(w http.ResponseWriter, r *http.Request) {
 		writeOAuthError(w, http.StatusBadRequest, "invalid_grant", "client mismatch")
 		return
 	}
-	// Reuse detection: if this token already has a replacement, family revoke.
+	// Reuse detection: if this token already has a replacement, family
+	// revoke. Fail CLOSED — if the revocation itself errors we must NOT
+	// fall through to issuing tokens, or a compromised (already-reused)
+	// family stays live through a storage hiccup (finding C1).
 	if rt.ReplacedBy != "" {
 		a.cfg.Logger.Warn("token: refresh reuse detected", "client_id", clientID, "family_id", rt.FamilyID)
-		_ = a.cfg.Storage.RefreshTokens().RevokeFamily(r.Context(), rt.FamilyID)
+		if err := a.cfg.Storage.RefreshTokens().RevokeFamily(r.Context(), rt.FamilyID); err != nil {
+			a.cfg.Logger.Error("token: family revoke on reuse failed", "err", err, "client_id", clientID, "family_id", rt.FamilyID)
+			writeOAuthError(w, http.StatusInternalServerError, "server_error", "revocation failed")
+			return
+		}
 		writeOAuthError(w, http.StatusBadRequest, "invalid_grant", "refresh reused")
 		return
 	}
@@ -202,14 +209,23 @@ func (a *AS) tokenRefresh(w http.ResponseWriter, r *http.Request) {
 	if err := a.cfg.Storage.RefreshTokens().MarkUsed(r.Context(), hash, newHash); err != nil {
 		if errors.Is(err, storage.ErrAlreadyConsumed) {
 			a.cfg.Logger.Warn("token: refresh rotation race lost; orphaned new token will be inert via family revoke", "client_id", clientID, "family_id", rt.FamilyID)
-			_ = a.cfg.Storage.RefreshTokens().RevokeFamily(r.Context(), rt.FamilyID)
-		} else {
-			a.cfg.Logger.Error("token: MarkUsed failed", "err", err, "client_id", clientID, "family_id", rt.FamilyID)
+			// Fail closed: if we cannot revoke the family, the orphaned
+			// new token we just saved would stay live (finding C1).
+			if rerr := a.cfg.Storage.RefreshTokens().RevokeFamily(r.Context(), rt.FamilyID); rerr != nil {
+				a.cfg.Logger.Error("token: family revoke after race loss failed", "err", rerr, "client_id", clientID, "family_id", rt.FamilyID)
+				writeOAuthError(w, http.StatusInternalServerError, "server_error", "revocation failed")
+				return
+			}
+			writeOAuthError(w, http.StatusBadRequest, "invalid_grant", "refresh reused")
+			return
 		}
+		a.cfg.Logger.Error("token: MarkUsed failed", "err", err, "client_id", clientID, "family_id", rt.FamilyID)
 		writeOAuthError(w, http.StatusBadRequest, "invalid_grant", "refresh reused")
 		return
 	}
-	a.mintAndWrite(w, r, rt.UserID, rt.ClientID, resource, rt.Scope, refreshPlain)
+	// Refresh grant: no client nonce is threaded (the stored refresh token
+	// carries none), so the rotated id_token omits the nonce claim.
+	a.mintAndWrite(w, r, rt.UserID, rt.ClientID, resource, rt.Scope, refreshPlain, "")
 }
 
 // saveRefreshToken persists a freshly generated refresh-token plaintext
@@ -236,8 +252,8 @@ func (a *AS) saveRefreshToken(ctx context.Context, plain, familyID, clientID, us
 // caller — this function only signs JWTs and writes the body, never
 // saves refresh tokens. Splitting save-then-mint is what guarantees the
 // S1 invariant (no marked-used-but-not-saved window).
-func (a *AS) mintAndWrite(w http.ResponseWriter, r *http.Request, userID, clientID, resource, scope, refreshPlain string) {
-	at, idTokenStr, err := a.mintTokens(r.Context(), userID, clientID, resource, scope)
+func (a *AS) mintAndWrite(w http.ResponseWriter, r *http.Request, userID, clientID, resource, scope, refreshPlain, nonce string) {
+	at, idTokenStr, err := a.mintTokens(r.Context(), userID, clientID, resource, scope, nonce)
 	if err != nil {
 		writeOAuthError(w, http.StatusInternalServerError, "server_error", err.Error())
 		return
@@ -257,7 +273,7 @@ func (a *AS) mintAndWrite(w http.ResponseWriter, r *http.Request, userID, client
 // id_token. It does NOT touch the refresh-token store. Returns short
 // error sentinels that the caller maps to OAuth 500 bodies; all log
 // emission for these failures happens here.
-func (a *AS) mintTokens(ctx context.Context, userID, clientID, resource, scope string) (accessToken, idTokenStr string, err error) {
+func (a *AS) mintTokens(ctx context.Context, userID, clientID, resource, scope, nonce string) (accessToken, idTokenStr string, err error) {
 	priv, kid, err := a.cfg.KeyManager.Signer(ctx)
 	if err != nil {
 		a.cfg.Logger.Error("token: signer unavailable", "err", err, "client_id", clientID)
@@ -307,6 +323,13 @@ func (a *AS) mintTokens(ctx context.Context, userID, clientID, resource, scope s
 	}
 	if pic != "" {
 		idClaims.Extra["picture"] = pic
+	}
+	// at_hash binds the id_token to this access token (OIDC Core §3.1.3.6);
+	// nonce (when the client supplied one at /authorize) lets the RP detect
+	// id_token replay (OIDC Core §2).
+	idClaims.Extra["at_hash"] = accessTokenHash(at)
+	if nonce != "" {
+		idClaims.Extra["nonce"] = nonce
 	}
 	idStr, err := jwt.Sign(idClaims, kid, priv)
 	if err != nil {
@@ -390,6 +413,14 @@ func verifyPKCE(challenge, verifier string) bool {
 	enc = strings.ReplaceAll(enc, "+", "-")
 	enc = strings.ReplaceAll(enc, "/", "_")
 	return enc == challenge
+}
+
+// accessTokenHash computes the OIDC at_hash for an RS256 id_token: the
+// base64url (no padding) encoding of the left-most 128 bits of the
+// SHA-256 of the access token's ASCII octets (OIDC Core §3.1.3.6).
+func accessTokenHash(accessToken string) string {
+	sum := sha256.Sum256([]byte(accessToken))
+	return base64.RawURLEncoding.EncodeToString(sum[:16])
 }
 
 // containsScope reports whether the whitespace-separated scope list

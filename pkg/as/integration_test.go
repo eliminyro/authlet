@@ -17,6 +17,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -33,6 +34,9 @@ type fakeOIDC struct {
 	kid      string
 	clientID string
 	email    string
+
+	mu       sync.Mutex
+	gotNonce string
 }
 
 func newFakeOIDCIntegration(t *testing.T) *fakeOIDC {
@@ -55,6 +59,9 @@ func newFakeOIDCIntegration(t *testing.T) *fakeOIDC {
 		})
 	})
 	mux.HandleFunc("/authorize", func(w http.ResponseWriter, r *http.Request) {
+		f.mu.Lock()
+		f.gotNonce = r.URL.Query().Get("nonce")
+		f.mu.Unlock()
 		redir, _ := url.Parse(r.URL.Query().Get("redirect_uri"))
 		q := redir.Query()
 		q.Set("code", "upstream-code")
@@ -71,9 +78,12 @@ func newFakeOIDCIntegration(t *testing.T) *fakeOIDC {
 		})
 	})
 	mux.HandleFunc("/token", func(w http.ResponseWriter, r *http.Request) {
+		f.mu.Lock()
+		nonce := f.gotNonce
+		f.mu.Unlock()
 		idTok := jwtv5.NewWithClaims(jwtv5.SigningMethodRS256, jwtv5.MapClaims{
 			"iss": issuer, "sub": "google-sub", "aud": f.clientID,
-			"email": f.email, "email_verified": true,
+			"email": f.email, "email_verified": true, "nonce": nonce,
 			"iat": time.Now().Unix(), "exp": time.Now().Add(time.Hour).Unix(),
 		})
 		idTok.Header["kid"] = f.kid
