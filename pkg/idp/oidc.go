@@ -37,15 +37,36 @@ func NewOIDC(ctx context.Context, issuerURL, clientID, clientSecret, redirectURL
 	}, nil
 }
 
-// AuthURL returns the upstream authorize URL for the given state.
-func (p *OIDCProvider) AuthURL(state string) string {
-	return p.oauth2Config.AuthCodeURL(state, oauth2.AccessTypeOnline)
+// AuthURL returns the upstream authorize URL for the given state, binding
+// a per-flow nonce and a PKCE S256 challenge derived from codeVerifier.
+// The nonce defends the upstream login leg against authorization-code
+// injection (OIDC Core §3.1.2.1); the PKCE challenge binds the upstream
+// code to the verifier presented at Exchange (OAuth 2.1 §7.6). Empty
+// nonce / codeVerifier arguments are omitted so a zero-config test
+// provider still produces a URL.
+func (p *OIDCProvider) AuthURL(state, nonce, codeVerifier string) string {
+	opts := []oauth2.AuthCodeOption{oauth2.AccessTypeOnline}
+	if nonce != "" {
+		opts = append(opts, oauth2.SetAuthURLParam("nonce", nonce))
+	}
+	if codeVerifier != "" {
+		opts = append(opts, oauth2.S256ChallengeOption(codeVerifier))
+	}
+	return p.oauth2Config.AuthCodeURL(state, opts...)
 }
 
 // Exchange exchanges an upstream authorization code for an ID token and
-// returns the parsed claims.
-func (p *OIDCProvider) Exchange(ctx context.Context, code string) (Claims, error) {
-	tok, err := p.oauth2Config.Exchange(ctx, code)
+// returns the parsed claims. codeVerifier completes the PKCE handshake
+// begun by AuthURL, and expectedNonce is matched byte-for-byte against
+// the id_token's nonce claim: a missing or mismatched nonce fails the
+// exchange, closing the upstream authorization-code injection vector
+// (OIDC Core §3.1.3.7).
+func (p *OIDCProvider) Exchange(ctx context.Context, code, codeVerifier, expectedNonce string) (Claims, error) {
+	opts := []oauth2.AuthCodeOption{}
+	if codeVerifier != "" {
+		opts = append(opts, oauth2.VerifierOption(codeVerifier))
+	}
+	tok, err := p.oauth2Config.Exchange(ctx, code, opts...)
 	if err != nil {
 		return Claims{}, fmt.Errorf("token exchange: %w", err)
 	}
@@ -60,6 +81,12 @@ func (p *OIDCProvider) Exchange(ctx context.Context, code string) (Claims, error
 	var raw map[string]any
 	if err := idTok.Claims(&raw); err != nil {
 		return Claims{}, fmt.Errorf("id token claims: %w", err)
+	}
+	// Validate the per-flow nonce. The go-oidc verifier checks signature,
+	// issuer, audience and expiry but NOT nonce, so this is the only gate
+	// against a replayed/injected upstream code.
+	if asString(raw["nonce"]) != expectedNonce {
+		return Claims{}, errors.New("idp: id_token nonce mismatch")
 	}
 	return Claims{
 		Issuer:        idTok.Issuer,

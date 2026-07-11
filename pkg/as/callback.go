@@ -45,7 +45,11 @@ func (a *AS) handleIDPCallbackImpl(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	claims, err := a.cfg.Upstream.Exchange(r.Context(), upstreamCode)
+	// Complete upstream PKCE with the stored verifier and validate the
+	// upstream id_token's nonce against the per-flow nonce. A mismatch
+	// (or a stripped nonce) means the code may have been injected, so the
+	// exchange fails closed (HIGH #2).
+	claims, err := a.cfg.Upstream.Exchange(r.Context(), upstreamCode, pending.UpstreamVerifier, pending.UpstreamNonce)
 	if err != nil {
 		a.cfg.Logger.Error("callback: upstream exchange failed", "err", err, "client_id", pending.ClientID)
 		http.Error(w, "upstream exchange failed", http.StatusBadGateway)
@@ -74,6 +78,7 @@ func (a *AS) handleIDPCallbackImpl(w http.ResponseWriter, r *http.Request) {
 		PKCEChallenge: pending.CodeChallenge,
 		PKCEMethod:    pending.CodeChallengeMethod,
 		RedirectURI:   pending.RedirectURI,
+		Nonce:         pending.Nonce,
 		ExpiresAt:     expires,
 	}); err != nil {
 		a.cfg.Logger.Error("callback: code save failed", "err", err, "client_id", pending.ClientID)
@@ -87,6 +92,9 @@ func (a *AS) handleIDPCallbackImpl(w http.ResponseWriter, r *http.Request) {
 	if pending.State != "" {
 		qs.Set("state", pending.State)
 	}
+	// RFC 9207: return the issuer identifier so the client can detect
+	// authorization-server mix-up / code injection from a rogue AS.
+	qs.Set("iss", a.cfg.Issuer)
 	u.RawQuery = qs.Encode()
 	http.Redirect(w, r, u.String(), http.StatusFound)
 }

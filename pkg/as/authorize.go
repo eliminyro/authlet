@@ -5,6 +5,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"time"
 
@@ -31,6 +32,7 @@ func (a *AS) handleAuthorizeImpl(w http.ResponseWriter, r *http.Request) {
 	clientState := q.Get("state")
 	challenge := q.Get("code_challenge")
 	challengeMethod := q.Get("code_challenge_method")
+	clientNonce := q.Get("nonce")
 
 	// Pre-redirect-validation errors: cannot trust redirect_uri, so we
 	// return a JSON body. Per RFC 6749 §4.1.2.1.
@@ -92,6 +94,21 @@ func (a *AS) handleAuthorizeImpl(w http.ResponseWriter, r *http.Request) {
 		redirectError(w, r, redirect, clientState, "server_error", "state gen failed")
 		return
 	}
+	// Per-flow secrets for the UPSTREAM login leg. randomID(32) yields a
+	// 43-char base64url string — a valid RFC 7636 code_verifier (charset
+	// is a subset of the PKCE unreserved set, length == the 43 minimum).
+	upstreamNonce, err := randomID(24)
+	if err != nil {
+		a.cfg.Logger.Error("authorize: nonce gen failed", "err", err, "client_id", clientID)
+		redirectError(w, r, redirect, clientState, "server_error", "nonce gen failed")
+		return
+	}
+	upstreamVerifier, err := randomID(32)
+	if err != nil {
+		a.cfg.Logger.Error("authorize: verifier gen failed", "err", err, "client_id", clientID)
+		redirectError(w, r, redirect, clientState, "server_error", "verifier gen failed")
+		return
+	}
 	a.states.Put(stateKey, pendingAuth{
 		ClientID:            clientID,
 		RedirectURI:         redirect,
@@ -100,10 +117,13 @@ func (a *AS) handleAuthorizeImpl(w http.ResponseWriter, r *http.Request) {
 		State:               clientState,
 		CodeChallenge:       challenge,
 		CodeChallengeMethod: challengeMethod,
+		Nonce:               clientNonce,
+		UpstreamNonce:       upstreamNonce,
+		UpstreamVerifier:    upstreamVerifier,
 		ExpiresAt:           time.Now().Add(a.cfg.StateCookieTTL),
 	})
 	a.setStateCookie(w, stateKey)
-	http.Redirect(w, r, a.cfg.Upstream.AuthURL(stateKey), http.StatusFound)
+	http.Redirect(w, r, a.cfg.Upstream.AuthURL(stateKey, upstreamNonce, upstreamVerifier), http.StatusFound)
 }
 
 // redirectError sends a 302 to the client's redirect_uri with OAuth error
@@ -130,33 +150,33 @@ func redirectError(w http.ResponseWriter, r *http.Request, redirectURI, state, e
 }
 
 // isLocalhost reports whether host (which may include :port) refers to
-// the loopback. Used to grant the http://... resource exception for
-// local development while still requiring https for public hosts.
+// the loopback. Used to grant the http://... exception for local
+// development while still requiring https for public hosts.
+//
+// It parses the host as an IP and defers to net.IP.IsLoopback (covering
+// 127.0.0.0/8 and ::1) plus the literal "localhost". A non-parseable host
+// such as "127.evil.com" is NOT loopback, closing the over-match where
+// HasPrefix(host, "127.") accepted attacker-controlled public hosts
+// (findings #5/#7).
 func isLocalhost(host string) bool {
 	h, _, err := net.SplitHostPort(host)
 	if err != nil {
 		h = host
 	}
-	return h == "localhost" || strings.HasPrefix(h, "127.") || h == "::1"
+	// A bare bracketed IPv6 literal without a port (e.g. "[::1]") survives
+	// SplitHostPort with its brackets intact; strip them before parsing.
+	h = strings.TrimSuffix(strings.TrimPrefix(h, "["), "]")
+	if h == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(h)
+	return ip != nil && ip.IsLoopback()
 }
 
-// redirectAllowed reports whether the candidate redirect_uri matches one of
-// the client's registered redirect URIs. Comparison is case-insensitive for
-// the exact match path, with a fallback to scheme/host/path equality.
+// redirectAllowed reports whether the candidate redirect_uri byte-exactly
+// matches one of the client's registered redirect URIs, per RFC 9700
+// §4.1.1. No case-folding and no query/fragment normalization: the
+// presented string must appear verbatim in the client's registration.
 func redirectAllowed(allowed []string, candidate string) bool {
-	c, err := url.Parse(candidate)
-	if err != nil {
-		return false
-	}
-	for _, u := range allowed {
-		if strings.EqualFold(u, candidate) {
-			return true
-		}
-		// Allow exact host match for localhost public clients.
-		pu, err := url.Parse(u)
-		if err == nil && pu.Host == c.Host && pu.Path == c.Path && pu.Scheme == c.Scheme {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(allowed, candidate)
 }

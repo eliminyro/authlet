@@ -36,21 +36,22 @@ func (a *AS) handleRevokeImpl(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	token := r.Form.Get("token")
-	hint := r.Form.Get("token_type_hint")
 	if token == "" {
 		w.WriteHeader(http.StatusOK) // RFC 7009: silent success
 		return
 	}
-	if hint == "" || hint == "refresh_token" {
-		hash := hashCode(token)
-		if rt, err := a.cfg.Storage.RefreshTokens().Get(r.Context(), hash); err == nil {
-			// RFC 7009 §2.2: an authenticated client may only revoke
-			// tokens that were issued to it. Don't leak existence.
-			if rt.ClientID == authedClientID {
-				_ = a.cfg.Storage.RefreshTokens().RevokeFamily(r.Context(), rt.FamilyID)
-			}
+	// RFC 7009 §2.1: token_type_hint is ADVISORY only. Ignore it and
+	// always attempt the refresh-token lookup/revocation, so a mismatched
+	// or omitted hint never silently skips revoking a live refresh token
+	// (finding #4). Access tokens are stateless and expire naturally, so
+	// there is no separate access-token store to consult.
+	hash := hashCode(token)
+	if rt, err := a.cfg.Storage.RefreshTokens().Get(r.Context(), hash); err == nil {
+		// RFC 7009 §2.2: an authenticated client may only revoke tokens
+		// that were issued to it. Don't leak existence.
+		if rt.ClientID == authedClientID {
+			_ = a.cfg.Storage.RefreshTokens().RevokeFamily(r.Context(), rt.FamilyID)
 		}
 	}
-	// Access tokens are stateless; expire naturally.
 	w.WriteHeader(http.StatusOK)
 }

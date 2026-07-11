@@ -19,17 +19,26 @@ import (
 // present in the freshly fetched JWKS document.
 var ErrNoKey = errors.New("rs: no matching JWKS key")
 
+// DefaultMinRefreshInterval is the minimum spacing between upstream JWKS
+// fetches once the cache is stale. It bounds how often a stale cache (e.g.
+// during an upstream outage, or a flood of unknown kids arriving after
+// expiry) can trigger a serialized upstream refresh.
+const DefaultMinRefreshInterval = time.Minute
+
 // JWKSClient fetches and caches a remote JWKS, honouring ETag-based
 // conditional refresh so unchanged documents incur no redundant decoding.
 type JWKSClient struct {
-	url      string
-	cacheTTL time.Duration
-	http     *http.Client
+	url                string
+	cacheTTL           time.Duration
+	minRefreshInterval time.Duration
+	http               *http.Client
 
-	mu        sync.Mutex
-	cache     map[string]*rsa.PublicKey
-	expiresAt time.Time
-	etag      string
+	mu          sync.Mutex
+	cache       map[string]*rsa.PublicKey
+	expiresAt   time.Time
+	lastRefresh time.Time
+	etag        string
+	now         func() time.Time
 }
 
 // NewJWKSClient builds a client that fetches the JWKS document at jwksURL
@@ -39,26 +48,56 @@ func NewJWKSClient(jwksURL string, ttl time.Duration) *JWKSClient {
 		ttl = time.Hour
 	}
 	return &JWKSClient{
-		url:      jwksURL,
-		cacheTTL: ttl,
-		http:     &http.Client{Timeout: 10 * time.Second},
-		cache:    map[string]*rsa.PublicKey{},
+		url:                jwksURL,
+		cacheTTL:           ttl,
+		minRefreshInterval: DefaultMinRefreshInterval,
+		http:               &http.Client{Timeout: 10 * time.Second},
+		cache:              map[string]*rsa.PublicKey{},
+		now:                time.Now,
 	}
 }
 
-// Key returns the RSA public key for kid, refreshing the cache from the
-// upstream JWKS endpoint if the cached copy is stale or missing the kid.
+// Key returns the RSA public key for kid.
+//
+// The cache is refreshed from the upstream JWKS endpoint ONLY when it is
+// actually stale (past expiresAt). A cache miss while the cache is still
+// fresh returns ErrNoKey without any upstream fetch — otherwise a flood of
+// bearer tokens carrying random unknown kids would force a serialized
+// refresh on every request and stall all token validation (DoS).
+//
+// When the cache is stale, refreshes are additionally rate-limited to at
+// most one per minRefreshInterval so repeated misses during an upstream
+// outage (or a stale-window flood) cannot trigger unbounded serialized
+// fetches. Within that backoff window the (stale) cache is served as-is.
 //
 // The lock is held for the entire refresh so concurrent callers serialise
-// rather than producing a thundering herd of upstream JWKS fetches. For
-// small JWKS documents this trade-off is acceptable; the alternative
-// (singleflight) adds complexity without measurable benefit here.
+// rather than producing a thundering herd of upstream JWKS fetches.
 func (c *JWKSClient) Key(ctx context.Context, kid string) (*rsa.PublicKey, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if pk, ok := c.cache[kid]; ok && time.Now().Before(c.expiresAt) {
+	now := c.now()
+
+	// Fast path: fresh cache hit.
+	if pk, ok := c.cache[kid]; ok && now.Before(c.expiresAt) {
 		return pk, nil
 	}
+	// Cache is still fresh but lacks this kid: the kid is genuinely unknown.
+	// Do NOT fetch — an unknown kid must never trigger an upstream refresh
+	// while the cache is valid.
+	if now.Before(c.expiresAt) {
+		return nil, ErrNoKey
+	}
+	// Cache is stale. Back off if we refreshed within minRefreshInterval,
+	// serving whatever the stale cache still holds. minRefreshInterval == 0
+	// disables the backoff (fetch on every stale miss).
+	if c.minRefreshInterval > 0 && !c.lastRefresh.IsZero() &&
+		now.Sub(c.lastRefresh) < c.minRefreshInterval {
+		if pk, ok := c.cache[kid]; ok {
+			return pk, nil
+		}
+		return nil, ErrNoKey
+	}
+	c.lastRefresh = now
 	if err := c.refreshLocked(ctx); err != nil {
 		return nil, err
 	}
@@ -97,7 +136,7 @@ func (c *JWKSClient) refreshLocked(ctx context.Context) error {
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode == http.StatusNotModified {
-		c.expiresAt = time.Now().Add(c.cacheTTL)
+		c.expiresAt = c.now().Add(c.cacheTTL)
 		return nil
 	}
 	if resp.StatusCode != http.StatusOK {
@@ -140,7 +179,7 @@ func (c *JWKSClient) refreshLocked(ctx context.Context) error {
 		return fmt.Errorf("jwks: parsed 0 usable keys (response had %d total)", len(doc.Keys))
 	}
 	c.cache = newCache
-	c.expiresAt = time.Now().Add(c.cacheTTL)
+	c.expiresAt = c.now().Add(c.cacheTTL)
 	c.etag = resp.Header.Get("ETag")
 	return nil
 }

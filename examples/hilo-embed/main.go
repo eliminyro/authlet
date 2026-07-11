@@ -8,7 +8,10 @@ package main
 
 import (
 	"context"
+	"errors"
+	"log"
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/eliminyro/authlet/pkg/as"
@@ -30,13 +33,28 @@ type hiloUserResolver struct{}
 
 // Resolve returns the internal user ID for the upstream OIDC claims. The
 // real implementation looks up users by claims.Email.
-func (hiloUserResolver) Resolve(_ context.Context, _ idp.Claims) (string, error) {
+func (hiloUserResolver) Resolve(_ context.Context, claims idp.Claims) (string, error) {
+	// Refuse to map identity on an unverified email — otherwise an upstream
+	// account with an unverified address could be mapped onto a user record.
+	if !claims.EmailVerified {
+		return "", errors.New("hilo-embed: upstream email not verified")
+	}
 	return "", nil
 }
 
 func main() {
 	ctx := context.Background()
-	masterKey := []byte("THIRTY-TWO-BYTES-OF-MASTER-KEY!!") // load from vault in real code
+
+	// Load the AES-GCM master key from the environment. In production, source
+	// this from a secrets manager (Vault, GCP Secret Manager, ...) rather than
+	// a raw env var. It MUST be exactly 32 bytes: a changed key silently
+	// rotates every signing key and invalidates all live tokens, so fail
+	// closed if it is missing or the wrong length — never fall back to a
+	// literal or an ephemeral key.
+	masterKey := []byte(os.Getenv("AUTHLET_MASTER_KEY"))
+	if len(masterKey) != 32 {
+		log.Fatal("AUTHLET_MASTER_KEY must be set to a 32-byte key")
+	}
 
 	store := authletStorage()
 	mgr := jwt.NewManager(store.SigningKeys(), masterKey)

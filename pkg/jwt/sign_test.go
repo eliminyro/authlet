@@ -5,6 +5,8 @@ import (
 	"errors"
 	"testing"
 	"time"
+
+	jwtv5 "github.com/golang-jwt/jwt/v5"
 )
 
 func newClaims() Claims {
@@ -68,6 +70,48 @@ func TestVerifyExpired(t *testing.T) {
 	})
 	if !errors.Is(err, ErrExpired) {
 		t.Fatalf("got %v", err)
+	}
+}
+
+// TestVerify_RejectsMissingExp asserts that a token carrying no exp claim
+// is rejected with ErrMissingExp. RFC 9068 §4 requires access tokens to
+// carry exp; without enforcement such a token would validate forever.
+func TestVerify_RejectsMissingExp(t *testing.T) {
+	k, _ := GenerateRSA()
+	// Build a token with every standard claim EXCEPT exp.
+	mc := jwtv5.MapClaims{
+		"iss": "https://issuer.example",
+		"sub": "u1",
+		"aud": "https://rs.example/api",
+		"iat": int64(1762000000),
+		"jti": "id1",
+	}
+	tok := jwtv5.NewWithClaims(jwtv5.SigningMethodRS256, mc)
+	tok.Header["kid"] = "kid1"
+	signed, err := tok.SignedString(k)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = Verify(signed, func(string) (*rsa.PublicKey, error) { return &k.PublicKey, nil }, VerifyOptions{
+		Now: func() time.Time { return time.Unix(1762000010, 0) },
+	})
+	if !errors.Is(err, ErrMissingExp) {
+		t.Fatalf("expected ErrMissingExp, got %v", err)
+	}
+}
+
+// TestVerify_RejectsZeroExp asserts a token with an explicit exp of 0
+// (non-positive) is also rejected, not treated as "no expiry".
+func TestVerify_RejectsZeroExp(t *testing.T) {
+	k, _ := GenerateRSA()
+	c := newClaims()
+	c.ExpiresAt = 0
+	tok, _ := Sign(c, "kid1", k)
+	_, err := Verify(tok, func(string) (*rsa.PublicKey, error) { return &k.PublicKey, nil }, VerifyOptions{
+		Now: func() time.Time { return time.Unix(1762000010, 0) },
+	})
+	if !errors.Is(err, ErrMissingExp) {
+		t.Fatalf("expected ErrMissingExp, got %v", err)
 	}
 }
 

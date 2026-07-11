@@ -9,7 +9,11 @@ package main
 
 import (
 	"context"
+	"errors"
+	"log"
 	"net/http"
+	"os"
+	"strings"
 	"time"
 
 	"github.com/eliminyro/authlet/pkg/as"
@@ -30,31 +34,66 @@ type memoryUserResolver struct{}
 
 // Resolve looks up tenant_users by claims.Email and returns tenant_users.id
 // as user_id. The placeholder returns the empty string.
-func (memoryUserResolver) Resolve(_ context.Context, _ idp.Claims) (string, error) {
+func (memoryUserResolver) Resolve(_ context.Context, claims idp.Claims) (string, error) {
+	// Refuse to map identity on an unverified email: an attacker who controls
+	// an upstream account with an unverified address could otherwise be mapped
+	// onto another user's tenant record. Fail closed.
+	if !claims.EmailVerified {
+		return "", errors.New("memory-embed: upstream email not verified")
+	}
 	// Look up tenant_users by claims.Email. Return tenant_users.id as user_id.
 	return "", nil
 }
 
+// apiKeyValidator validates a legacy API key carried on the request and
+// reports whether the caller is authenticated. Implement it in your app; the
+// placeholder below rejects everything so the example fails closed until a
+// real validator is wired in.
+type apiKeyValidator func(r *http.Request) bool
+
+// legacyAPIKey is your existing API-key check. The placeholder returns false:
+// until you supply a real validator, requests without a valid Bearer JWT are
+// rejected rather than served unauthenticated.
+func legacyAPIKey(_ *http.Request) bool { return false }
+
 // dualAuth runs the bearer middleware when the request carries an
-// Authorization: Bearer header, and otherwise falls through to the legacy
-// API-key validator (not shown). This lets a service migrate to OAuth
-// without breaking existing API-key clients.
-func dualAuth(bearer func(http.Handler) http.Handler, next http.Handler) http.Handler {
+// Authorization: Bearer header, and otherwise requires the legacy API-key
+// validator to accept the request. It NEVER falls through to the protected
+// handler unauthenticated: a request with neither a valid Bearer JWT nor a
+// valid API key gets a 401. This lets a service migrate to OAuth without
+// breaking existing API-key clients, while failing closed.
+func dualAuth(bearer func(http.Handler) http.Handler, validateAPIKey apiKeyValidator, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// If Authorization: Bearer is set, run the bearer middleware.
-		// Otherwise fall back to existing API-key middleware (not shown).
-		if h := r.Header.Get("Authorization"); len(h) > 7 && h[:7] == "Bearer " {
+		// Bearer path: the RS middleware validates the JWT and writes its own
+		// 401 + WWW-Authenticate on failure. The scheme name is
+		// case-insensitive (RFC 7235), so match it without slicing.
+		if h := r.Header.Get("Authorization"); strings.HasPrefix(strings.ToLower(h), "bearer ") {
 			bearer(next).ServeHTTP(w, r)
 			return
 		}
-		// fallback to legacy API-key validator here
-		next.ServeHTTP(w, r)
+		// Legacy API-key path: an explicit, validated branch. Fail closed if
+		// no validator is configured or it rejects the request.
+		if validateAPIKey != nil && validateAPIKey(r) {
+			next.ServeHTTP(w, r)
+			return
+		}
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
 	})
 }
 
 func main() {
 	ctx := context.Background()
-	masterKey := []byte("THIRTY-TWO-BYTES-OF-MASTER-KEY!!")
+
+	// Load the AES-GCM master key from the environment. In production, source
+	// this from a secrets manager (Vault, GCP Secret Manager, ...) rather than
+	// a raw env var. It MUST be exactly 32 bytes: a changed key silently
+	// rotates every signing key and invalidates all live tokens, so fail
+	// closed if it is missing or the wrong length — never fall back to a
+	// literal or an ephemeral key.
+	masterKey := []byte(os.Getenv("AUTHLET_MASTER_KEY"))
+	if len(masterKey) != 32 {
+		log.Fatal("AUTHLET_MASTER_KEY must be set to a 32-byte key")
+	}
 
 	store := authletStorage()
 	mgr := jwt.NewManager(store.SigningKeys(), masterKey)
@@ -105,8 +144,8 @@ func main() {
 	mcpHandler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte("mcp"))
 	})
-	mux.Handle("/mcp", dualAuth(bearer, mcpHandler))
-	mux.Handle("/mcp/", dualAuth(bearer, mcpHandler))
+	mux.Handle("/mcp", dualAuth(bearer, legacyAPIKey, mcpHandler))
+	mux.Handle("/mcp/", dualAuth(bearer, legacyAPIKey, mcpHandler))
 
 	// RunCleanup spawns its own goroutine; discard the done channel.
 	_ = server.RunCleanup(ctx, time.Hour)

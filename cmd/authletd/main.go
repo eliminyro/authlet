@@ -4,10 +4,10 @@ package main
 
 import (
 	"context"
-	"crypto/rand"
 	"encoding/base64"
 	"errors"
 	"flag"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -31,7 +31,7 @@ func main() {
 		upstreamSecret = flag.String("upstream-client-secret", "", "upstream OIDC client secret")
 		upstreamRedir  = flag.String("upstream-redirect", "", "upstream OIDC redirect URI (e.g. <issuer>/oauth/idp/callback)")
 		prmResource    = flag.String("prm-resource", "", "if set, also serve /.well-known/oauth-protected-resource/* pointing at this resource URL")
-		masterKeyB64   = flag.String("master-key-b64", os.Getenv("AUTHLET_MASTER_KEY"), "base64 32-byte AES-GCM master key (else random)")
+		masterKeyB64   = flag.String("master-key-b64", os.Getenv("AUTHLET_MASTER_KEY"), "base64-encoded 32-byte AES-GCM master key (required; defaults to $AUTHLET_MASTER_KEY)")
 	)
 	flag.Parse()
 
@@ -58,6 +58,10 @@ func main() {
 	resolver := idp.UserResolverFunc(func(_ context.Context, c idp.Claims) (string, error) {
 		if c.Email == "" {
 			return "", errors.New("authletd: upstream claims missing email")
+		}
+		// Refuse to map identity on an unverified email — fail closed.
+		if !c.EmailVerified {
+			return "", errors.New("authletd: upstream email not verified")
 		}
 		return c.Email, nil
 	})
@@ -114,13 +118,18 @@ func main() {
 }
 
 func loadMasterKey(b64 string) ([]byte, error) {
-	if b64 != "" {
-		return base64.StdEncoding.DecodeString(b64)
+	// Never mint an ephemeral key: a fresh key on every restart silently
+	// rotates the signing keys and invalidates all live tokens. Fail closed
+	// instead. In production, source this from a secrets manager.
+	if b64 == "" {
+		return nil, errors.New("master key required: set AUTHLET_MASTER_KEY (or --master-key-b64) to a base64-encoded 32-byte AES-GCM key")
 	}
-	k := make([]byte, 32)
-	if _, err := rand.Read(k); err != nil {
+	key, err := base64.StdEncoding.DecodeString(b64)
+	if err != nil {
 		return nil, err
 	}
-	log.Printf("authletd: generated ephemeral master key (set AUTHLET_MASTER_KEY for persistence)")
-	return k, nil
+	if len(key) != 32 {
+		return nil, fmt.Errorf("master key must be 32 bytes, got %d", len(key))
+	}
+	return key, nil
 }

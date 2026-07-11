@@ -17,7 +17,17 @@ type pendingAuth struct {
 	State               string
 	CodeChallenge       string
 	CodeChallengeMethod string
-	ExpiresAt           time.Time
+	// Nonce is the client-supplied OIDC nonce from authlet's own
+	// /authorize. It is echoed into the minted id_token so the downstream
+	// RP can detect id_token replay (OIDC Core §2). Empty when absent.
+	Nonce string
+	// UpstreamNonce and UpstreamVerifier bind the UPSTREAM login leg
+	// (Google/IdP). The nonce is validated against the upstream id_token
+	// and the verifier completes upstream PKCE at Exchange — together they
+	// close upstream authorization-code injection (HIGH #2).
+	UpstreamNonce    string
+	UpstreamVerifier string
+	ExpiresAt        time.Time
 }
 
 // stateStore is the in-memory map of pending authorize requests keyed by a

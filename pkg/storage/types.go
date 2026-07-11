@@ -32,7 +32,11 @@ type AuthCode struct {
 	PKCEChallenge string
 	PKCEMethod    string
 	RedirectURI   string
-	ExpiresAt     time.Time
+	// Nonce carries the client-supplied OIDC nonce from /authorize through
+	// to /token so it can be echoed into the minted id_token (OIDC Core
+	// §2). Empty when the client sent no nonce.
+	Nonce     string
+	ExpiresAt time.Time
 }
 
 // RefreshToken is a long-lived token used to mint new access tokens.

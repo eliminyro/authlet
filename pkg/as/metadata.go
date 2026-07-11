@@ -35,26 +35,31 @@ type ASMetadata struct {
 	IDTokenSigningAlgValuesSupported []string `json:"id_token_signing_alg_values_supported,omitempty"`
 	// SubjectTypesSupported lists OIDC subject types.
 	SubjectTypesSupported []string `json:"subject_types_supported,omitempty"`
+	// AuthorizationResponseIssParameterSupported advertises that the
+	// authorization response carries the RFC 9207 `iss` parameter, so
+	// clients can detect AS mix-up / code injection.
+	AuthorizationResponseIssParameterSupported bool `json:"authorization_response_iss_parameter_supported"`
 }
 
 func (a *AS) metadata() ASMetadata {
 	base := a.cfg.Issuer
 	p := base + a.cfg.PathPrefix
 	return ASMetadata{
-		Issuer:                            base,
-		AuthorizationEndpoint:             p + "/authorize",
-		TokenEndpoint:                     p + "/token",
-		RegistrationEndpoint:              p + "/register",
-		RevocationEndpoint:                p + "/revoke",
-		UserinfoEndpoint:                  p + "/userinfo",
-		JWKSURI:                           base + "/.well-known/jwks.json",
-		ScopesSupported:                   []string{"mcp"},
-		ResponseTypesSupported:            []string{"code"},
-		GrantTypesSupported:               []string{"authorization_code", "refresh_token"},
-		CodeChallengeMethodsSupported:     []string{"S256"},
-		TokenEndpointAuthMethodsSupported: []string{"none", "client_secret_basic"},
-		IDTokenSigningAlgValuesSupported:  []string{"RS256"},
-		SubjectTypesSupported:             []string{"public"},
+		Issuer:                                     base,
+		AuthorizationEndpoint:                      p + "/authorize",
+		TokenEndpoint:                              p + "/token",
+		RegistrationEndpoint:                       p + "/register",
+		RevocationEndpoint:                         p + "/revoke",
+		UserinfoEndpoint:                           p + "/userinfo",
+		JWKSURI:                                    base + "/.well-known/jwks.json",
+		ScopesSupported:                            []string{"mcp"},
+		ResponseTypesSupported:                     []string{"code"},
+		GrantTypesSupported:                        []string{"authorization_code", "refresh_token"},
+		CodeChallengeMethodsSupported:              []string{"S256"},
+		TokenEndpointAuthMethodsSupported:          []string{"none", "client_secret_basic"},
+		IDTokenSigningAlgValuesSupported:           []string{"RS256"},
+		SubjectTypesSupported:                      []string{"public"},
+		AuthorizationResponseIssParameterSupported: true,
 	}
 }
 
