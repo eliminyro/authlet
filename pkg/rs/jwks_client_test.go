@@ -140,11 +140,12 @@ func TestJWKSClient_SkipsNonRS256Alg(t *testing.T) {
 	}
 }
 
-// TestJWKSClient_UnknownKidNoFetchWhenFresh is the core DoS guard: while the
-// cache is still fresh, a flood of unknown kids must NOT trigger any upstream
-// refresh. Previously every unknown-kid request forced a serialized fetch,
-// letting an attacker stall all token validation with random kids.
-func TestJWKSClient_UnknownKidNoFetchWhenFresh(t *testing.T) {
+// TestJWKSClient_UnknownKidFloodBoundedWhileFresh is the DoS guard: an
+// unknown-kid flood is rate-limited to at most one upstream fetch per
+// minRefreshInterval. Here the warm fetch consumed the current interval, so an
+// immediate burst of unknown kids against the still-fresh cache adds ZERO
+// further fetches — an attacker cannot stall token validation with random kids.
+func TestJWKSClient_UnknownKidFloodBoundedWhileFresh(t *testing.T) {
 	priv, _ := jwt.GenerateRSA()
 	hits := 0
 	srv := startJWKSServer(t, &priv.PublicKey, "k1", &hits)
@@ -270,5 +271,67 @@ func TestJWKSClient_ConcurrentUnknownKidNoStampede(t *testing.T) {
 	wg.Wait()
 	if hits != 1 {
 		t.Fatalf("concurrent unknown-kid stampede triggered %d fetches, want 1", hits)
+	}
+}
+
+// TestJWKSClient_NewKidRefreshedWhileCacheStillFresh is the A1 regression: a
+// signing-key rotation mints tokens under a NEW kid immediately, while the RS
+// cache is still FRESH (well within its TTL). The verifier must pick the new kid
+// up within minRefreshInterval, not reject every new token until the full TTL
+// lapses. Before the fix, a fresh-cache miss returned ErrNoKey with no fetch,
+// causing a recurring ~1h post-rotation auth outage.
+func TestJWKSClient_NewKidRefreshedWhileCacheStillFresh(t *testing.T) {
+	priv, _ := jwt.GenerateRSA()
+
+	var mu sync.Mutex
+	kid := "k1"
+	hits := 0
+	mux := http.NewServeMux()
+	mux.HandleFunc("/jwks", func(w http.ResponseWriter, _ *http.Request) {
+		mu.Lock()
+		cur := kid
+		hits++
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"keys": []map[string]any{{
+				"kty": "RSA", "use": "sig", "alg": "RS256", "kid": cur,
+				"n": base64.RawURLEncoding.EncodeToString(priv.N.Bytes()),
+				"e": base64.RawURLEncoding.EncodeToString(big.NewInt(int64(priv.E)).Bytes()),
+			}},
+		})
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	// Long TTL (1h) so the cache stays FRESH throughout; the rotation is picked
+	// up via the minRefreshInterval path, not TTL expiry.
+	c := NewJWKSClient(srv.URL+"/jwks", time.Hour)
+	now := time.Unix(3_000_000, 0)
+	c.now = func() time.Time { return now }
+
+	if _, err := c.Key(context.Background(), "k1"); err != nil {
+		t.Fatal(err)
+	}
+	if hits != 1 {
+		t.Fatalf("expected 1 warm fetch, got %d", hits)
+	}
+
+	// AS rotates and immediately mints k2 tokens. The cache is still fresh (2m of
+	// a 1h TTL) but the refresh backoff (1m) has elapsed.
+	mu.Lock()
+	kid = "k2"
+	mu.Unlock()
+	now = now.Add(2 * time.Minute)
+
+	pk, err := c.Key(context.Background(), "k2")
+	if err != nil {
+		t.Fatalf("rotated kid on a still-fresh cache not picked up (A1 regression): %v", err)
+	}
+	if !pk.Equal(&priv.PublicKey) {
+		t.Fatal("wrong key returned for rotated kid")
+	}
+	if hits != 2 {
+		t.Fatalf("expected exactly 2 fetches (warm + one rotation refresh), got %d", hits)
 	}
 }
