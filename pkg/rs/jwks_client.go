@@ -59,16 +59,17 @@ func NewJWKSClient(jwksURL string, ttl time.Duration) *JWKSClient {
 
 // Key returns the RSA public key for kid.
 //
-// The cache is refreshed from the upstream JWKS endpoint ONLY when it is
-// actually stale (past expiresAt). A cache miss while the cache is still
-// fresh returns ErrNoKey without any upstream fetch — otherwise a flood of
-// bearer tokens carrying random unknown kids would force a serialized
-// refresh on every request and stall all token validation (DoS).
+// A fresh cache hit returns immediately with no upstream fetch. Any MISS — an
+// unknown kid on a still-fresh cache, or any lookup on a stale cache — attempts
+// a refresh, because a signing-key rotation immediately mints tokens under a new
+// kid the fresh cache does not yet know; without this, every newly issued token
+// would 401 until the TTL lapsed.
 //
-// When the cache is stale, refreshes are additionally rate-limited to at
-// most one per minRefreshInterval so repeated misses during an upstream
-// outage (or a stale-window flood) cannot trigger unbounded serialized
-// fetches. Within that backoff window the (stale) cache is served as-is.
+// Refreshes (on either path) are rate-limited to at most one per
+// minRefreshInterval, so a flood of bearer tokens carrying random unknown kids
+// cannot force more than one serialized upstream fetch per interval (DoS guard);
+// within that backoff window the cache is served as-is. A rotated kid is thus
+// picked up within minRefreshInterval rather than the full cache TTL.
 //
 // The lock is held for the entire refresh so concurrent callers serialise
 // rather than producing a thundering herd of upstream JWKS fetches.
@@ -81,15 +82,16 @@ func (c *JWKSClient) Key(ctx context.Context, kid string) (*rsa.PublicKey, error
 	if pk, ok := c.cache[kid]; ok && now.Before(c.expiresAt) {
 		return pk, nil
 	}
-	// Cache is still fresh but lacks this kid: the kid is genuinely unknown.
-	// Do NOT fetch — an unknown kid must never trigger an upstream refresh
-	// while the cache is valid.
-	if now.Before(c.expiresAt) {
-		return nil, ErrNoKey
-	}
-	// Cache is stale. Back off if we refreshed within minRefreshInterval,
-	// serving whatever the stale cache still holds. minRefreshInterval == 0
-	// disables the backoff (fetch on every stale miss).
+	// Cache MISS — an unknown kid on a still-fresh cache, or any lookup on a
+	// stale cache. Both must be able to trigger an upstream refresh: the AS
+	// rotates its signing key periodically and immediately mints tokens under
+	// the NEW kid, so a still-fresh cache that predates the rotation would
+	// otherwise reject every newly issued token for the whole TTL (a recurring
+	// post-rotation auth outage). Bound it with the same backoff the stale path
+	// uses: refresh at most once per minRefreshInterval, serving whatever the
+	// cache holds within the window — so a flood of random unknown kids still
+	// can't force more than one fetch per interval (the original DoS guard).
+	// minRefreshInterval == 0 disables the backoff (fetch on every miss).
 	if c.minRefreshInterval > 0 && !c.lastRefresh.IsZero() &&
 		now.Sub(c.lastRefresh) < c.minRefreshInterval {
 		if pk, ok := c.cache[kid]; ok {
